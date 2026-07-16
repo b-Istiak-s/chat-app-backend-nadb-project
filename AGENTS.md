@@ -182,3 +182,34 @@ alternatives. Use `database-query` for read-only DB queries,
 Run `vendor/bin/pint --dirty --format agent` after modifying PHP files.
 
 </laravel-boost-guidelines>
+
+<git-workflow>
+
+## Git Workflow
+
+- **No `git push`** without explicit user approval.
+- **One repo per concern**: this project is the **backend** repo at
+  `backend/`. The Flutter client lives in a separate repo at `app/`.
+- **Commit modularly**: split work into logical, single-purpose
+  commits so each one is independently reviewable. Typical modules
+  in this project: scaffold → traits → config → bdapps services →
+  db migrations → models → openrouter service → auth controller →
+  chat controller → webhook controller → routes/provider → tests →
+  docs. Squash only inside a single module if you must; never squash
+  across modules.
+- **Never commit secrets.** `.env`, `.env.testing` (which uses fake
+  values, but still), API keys, production passwords, etc. must
+  stay out of the index. The repo's `.gitignore` covers `.env`; the
+  docs in `agents/api/curl/*.md` use the `<BDAPPS_PASSWORD>`
+  placeholder. If you find a leaked secret, redact in a follow-up
+  commit AND rotate the secret out-of-band.
+- **Commit messages**: imperative subject line, blank line, body
+  explaining *why*. Co-authored-by Sonnet 4.6 <noreply@puku.sh> on
+  every commit. Format example:
+  ```
+  feat(bdapps): add BdAppsService + SubscriptionService + repo
+
+  BdAppsService — thin CURL wrapper around the Robi BDApps gateway...
+  ```
+
+</git-workflow>
