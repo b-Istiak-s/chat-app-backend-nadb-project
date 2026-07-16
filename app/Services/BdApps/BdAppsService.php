@@ -285,7 +285,7 @@ class BdAppsService
             $logPayload['password'] = '****';
         }
 
-        Log::channel(config('bdapps.log_channel', 'stack'))->info("bdapps.{$endpoint}", [
+        Log::channel('bdapps')->info("bdapps.{$endpoint}", [
             'http_status' => $httpStatus,
             'request' => $logPayload,
             'response' => $body,

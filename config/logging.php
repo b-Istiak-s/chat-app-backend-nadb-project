@@ -130,14 +130,14 @@ return [
 
         // Dedicated channel for every outbound BDApps request and
         // every inbound BDApps webhook payload. Writes JSON-encoded
-        // lines (one per call) to storage/logs/bdapps.log so an
-        // operator can tail the full request/response without grepping
-        // through the general application log.
+        // lines (one per call) to storage/logs/bdapps-YYYY-MM-DD.log
+        // so an operator can tail the full request/response without
+        // grepping through the general application log.
         'bdapps' => [
             'driver' => 'daily',
             'path' => storage_path('logs/bdapps.log'),
-            'level' => env('BDAPPS_LOG_LEVEL', 'debug'),
-            'days' => env('BDAPPS_LOG_DAYS', 30),
+            'level' => 'debug',
+            'days' => 30,
             'replace_placeholders' => true,
             'formatter' => Monolog\Formatter\JsonFormatter::class,
         ],

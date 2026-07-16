@@ -48,10 +48,4 @@ return [
     // Webhook shared secret. Used by /api/webhooks/bdapps/notify to
     // authenticate incoming BDApps notifications via constant-time compare.
     'notify_secret' => env('BDAPPS_NOTIFY_SECRET', ''),
-
-    // Dedicated log channel for both outbound CURL calls and inbound
-    // webhook payloads. Defaults to the dedicated `bdapps` channel
-    // defined in config/logging.php; can be overridden via
-    // BDAPPS_LOG_CHANNEL=stack (or any other channel) in .env.
-    'log_channel' => env('BDAPPS_LOG_CHANNEL', 'bdapps'),
 ];
