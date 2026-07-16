@@ -75,3 +75,11 @@ curl \
 - The Laravel `Http` client is used with `Content-Type: application/json`,
   `Accept: application/json`, and a 30-second timeout (configurable
   via `BDAPPS_TIMEOUT`).
+
+## Logging
+
+Every outbound call is logged to the dedicated `bdapps` channel
+(`storage/logs/bdapps-YYYY-MM-DD.log`, JSON formatter) as
+`bdapps.otp.request` with the redacted request body
+(`password` field replaced with `****`) and the parsed response body.
+See `agents/api/webhooks.md` for the inbound side.

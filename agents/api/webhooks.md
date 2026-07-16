@@ -60,3 +60,25 @@ If the applicationId doesn't match, or the notify_secret is wrong:
   "statusDetail": "Unauthorized."
 }
 ```
+
+## Logging
+
+Every inbound webhook is logged to the dedicated `bdapps` channel
+(`storage/logs/bdapps-YYYY-MM-DD.log`, JSON formatter):
+
+- `bdapps.notify_received` — first entry, includes the full body
+  + headers + IP, so even auth failures leave a forensic trail
+- `bdapps.notify_app_id_mismatch` / `bdapps.notify_secret_mismatch` —
+  auth rejections (also returns 401 to the gateway)
+- `bdapps.notify_missing_fields` / `bdapps.notify_invalid_subscriber_id`
+  — bad payload rejections
+- `bdapps.notify_unknown_phone` — phone not in our DB (acknowledge S1000
+  anyway so BDApps doesn't retry forever)
+- `bdapps.notify_applied` — successful state change, with user_id, phone,
+  status, frequency, and the gateway timestamp
+
+The same `bdapps` channel also carries the matching outbound
+entries (`bdapps.otp.request`, `bdapps.otp.verify`,
+`bdapps.subscription.send`, `bdapps.subscription.getStatus`) so a
+single `tail -f storage/logs/bdapps-$(date +%F).log` shows the full
+conversation between our backend and Robi BDApps.
