@@ -20,6 +20,17 @@ class SubscriptionService
     ) {}
 
     /**
+     * Resolve the dedicated BDApps log channel so high-level
+     * orchestrator events (otp_request_failed, verify_failed,
+     * unsubscribe_failed, apply_notify_status) land alongside
+     * the per-request entries BdAppsService writes.
+     */
+    protected function log()
+    {
+        return Log::channel((string) config('bdapps.log_channel', 'bdapps'));
+    }
+
+    /**
      * Start (or restart) a subscription for the given user. Calls
      * /otp/request and persists the returned referenceNo so the
      * matching /otp/verify call can succeed.
@@ -41,7 +52,18 @@ class SubscriptionService
             ];
         }
 
-        $otpResult = $this->bdApps->requestOtp($user->phone);
+        try {
+            $otpResult = $this->bdApps->requestOtp($user->phone);
+        } catch (\Throwable $e) {
+            // Transport-level failure (timeout, DNS, TLS, HTTP parse).
+            // /otp/request never produced a reference_no, so we don't
+            // even start a row — the next login will retry.
+            $this->log()->error('bdapps.subscribe_failed_on_register', [
+                'phone' => $user->phone,
+                'error' => $e->getMessage(),
+            ]);
+            throw $e;
+        }
 
         $subscription = $this->subscriptions->create([
             'user_id' => $user->id,
@@ -56,10 +78,12 @@ class SubscriptionService
         ]);
 
         if (! ($otpResult['ok'] ?? false)) {
-            Log::warning('bdapps.otp_request_failed', [
+            $this->log()->error('bdapps.otp_request_failed', [
                 'user_id' => $user->id,
+                'phone' => $user->phone,
                 'status_code' => $otpResult['status_code'] ?? null,
                 'status_detail' => $otpResult['status_detail'] ?? null,
+                'http_status' => $otpResult['http_status'] ?? null,
             ]);
         }
 
@@ -98,9 +122,20 @@ class SubscriptionService
                     'cancelled_at' => now(),
                 ]);
             }
+
+            if (! ($result['ok'] ?? false)) {
+                $this->log()->error('bdapps.unsubscribe_failed', [
+                    'user_id' => $user->id,
+                    'phone' => $user->phone,
+                    'status_code' => $result['status_code'] ?? null,
+                    'status_detail' => $result['status_detail'] ?? null,
+                    'http_status' => $result['http_status'] ?? null,
+                ]);
+            }
         } catch (\Throwable $e) {
-            Log::error('bdapps.unsubscribe_failed', [
+            $this->log()->error('bdapps.unsubscribe_failed', [
                 'user_id' => $user->id,
+                'phone' => $user->phone,
                 'error' => $e->getMessage(),
             ]);
 
@@ -175,6 +210,15 @@ class SubscriptionService
                     'reference_no' => null,
                 ]);
             }
+        } else {
+            $this->log()->error('bdapps.verify_failed', [
+                'user_id' => $user->id,
+                'phone' => $user->phone,
+                'reference_no' => $referenceNo,
+                'status_code' => $result['status_code'] ?? null,
+                'status_detail' => $result['status_detail'] ?? null,
+                'http_status' => $result['http_status'] ?? null,
+            ]);
         }
 
         return $result;
