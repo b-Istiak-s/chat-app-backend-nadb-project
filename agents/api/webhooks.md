@@ -76,9 +76,28 @@ Every inbound webhook is logged to the dedicated `bdapps` channel
   anyway so BDApps doesn't retry forever)
 - `bdapps.notify_applied` — successful state change, with user_id, phone,
   status, frequency, and the gateway timestamp
+- `bdapps.notify_misconfigured` — `bdapps.application_id` is empty
+  in our config (500 to the gateway)
 
-The same `bdapps` channel also carries the matching outbound
-entries (`bdapps.otp.request`, `bdapps.otp.verify`,
-`bdapps.subscription.send`, `bdapps.subscription.getStatus`) so a
-single `tail -f storage/logs/bdapps-$(date +%F).log` shows the full
-conversation between our backend and Robi BDApps.
+The same `bdapps` channel also carries:
+
+- **Outbound request/response entries** written by `BdAppsService`
+  (`bdapps.otp.request`, `bdapps.otp.verify`,
+  `bdapps.subscription.send`, `bdapps.subscription.getStatus`) with
+  the password redacted.
+- **Orchestrator-level failure entries** written by `SubscriptionService`
+  when the gateway rejects a call or transport fails:
+  - `bdapps.subscribe_failed_on_register` — `/otp/request` rejected
+    on registration (fields: `phone`, `status_code`, `status_detail`,
+    or `transport_error`).
+  - `bdapps.otp_request_failed` — `/otp/request` rejected mid-session
+    (e.g. when re-issuing a reference for verify).
+  - `bdapps.verify_failed` — `/otp/verify` rejected (wrong/expired
+    OTP). Fields: `user_id`, `phone`, `reference_no`, `status_code`,
+    `status_detail`.
+  - `bdapps.unsubscribe_failed` — `/subscription/send` rejected on
+    cancel. Fields: `user_id`, `phone`, `status_code`,
+    `status_detail`, or `transport_error`.
+
+A single `tail -f storage/logs/bdapps-$(date +%F).log` shows the
+full conversation between our backend and Robi BDApps.

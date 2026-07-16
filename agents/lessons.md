@@ -47,3 +47,41 @@ header (or `notify_secret` body field as fallback).
 **Check next time:** Never overload the same credential across two
 different surfaces (gateway auth vs webhook auth). Each surface should
 have its own rotating secret.
+
+## 2026-07-16 — Dedicated exception type for gateway errors
+
+**What was flawed:** Catching `\Throwable $e` and reading
+`$e->getMessage()` for BDApps failures loses the structured fields
+(`statusCode` like `E1312`, `statusDetail` like "Request is Invalid.")
+the gateway gives us. Trying to parse them back out of the message
+string is fragile.
+
+**Correction:** `BdAppsService` now throws `App\Exceptions\BdApps\
+BdAppsException` whenever the gateway returns `ok=false`. The
+exception carries public readonly `statusCode`, `statusDetail`, and
+`httpStatus` properties. Callers (`SubscriptionService`) catch
+`BdAppsException` and log structured fields directly:
+`['phone' => ..., 'status_code' => $e->statusCode, 'status_detail'
+=> $e->statusDetail]`.
+
+**Check next time:** When wrapping any third-party API, prefer a
+dedicated exception class with typed properties over a generic
+`\Throwable`. It makes structured logging and conditional catch
+blocks trivial.
+
+## 2026-07-16 — Inline `Log::channel(...)` over `$this->log()` helpers
+
+**What was flawed:** A `protected function log()` helper that
+resolved `Log::channel(config('bdapps.log_channel', 'bdapps'))` felt
+DRY but obscured which channel each entry actually landed in. With
+the helper in place you had to scroll up to confirm whether a given
+`->error()` call was going to `stack`, `bdapps`, or somewhere else.
+
+**Correction:** All BDApps log sites now use inline
+`Log::channel('bdapps')->error(...)` (or `info`/`warning`). The
+channel name is right there at the call site, so the destination is
+self-evident.
+
+**Check next time:** Only reach for a logging helper when the channel
+is genuinely dynamic per call (e.g. resolved from a per-tenant
+config). For everything else, spell the channel out at the call site.
