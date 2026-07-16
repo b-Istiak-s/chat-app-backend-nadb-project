@@ -4,6 +4,7 @@ use Monolog\Handler\NullHandler;
 use Monolog\Handler\StreamHandler;
 use Monolog\Handler\SyslogUdpHandler;
 use Monolog\Processor\PsrLogMessageProcessor;
+use Monolog\Formatter\JsonFormatter;
 
 return [
 
@@ -125,6 +126,20 @@ return [
 
         'emergency' => [
             'path' => storage_path('logs/laravel.log'),
+        ],
+
+        // Dedicated channel for every outbound BDApps request and
+        // every inbound BDApps webhook payload. Writes JSON-encoded
+        // lines (one per call) to storage/logs/bdapps.log so an
+        // operator can tail the full request/response without grepping
+        // through the general application log.
+        'bdapps' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/bdapps.log'),
+            'level' => env('BDAPPS_LOG_LEVEL', 'debug'),
+            'days' => env('BDAPPS_LOG_DAYS', 30),
+            'replace_placeholders' => true,
+            'formatter' => Monolog\Formatter\JsonFormatter::class,
         ],
 
     ],
