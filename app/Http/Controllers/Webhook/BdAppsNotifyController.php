@@ -26,6 +26,10 @@ use Symfony\Component\HttpFoundation\Response;
  * config('bdapps.notify_secret'). If notify_secret is empty we fall
  * back to verifying applicationId + a password check (mirroring the
  * pattern from BDApps quiz_app PHP listener).
+ *
+ * Every entry this controller writes goes to the dedicated `bdapps`
+ * log channel so the inbound webhook conversation is correlated with
+ * the outbound entries BdAppsService writes.
  */
 class BdAppsNotifyController extends Controller
 {
@@ -33,17 +37,6 @@ class BdAppsNotifyController extends Controller
         private SubscriptionService $subscriptionService,
         private BdAppsService $bdApps,
     ) {}
-
-    /**
-     * Resolve the dedicated BDApps log channel so every entry this
-     * controller writes (inbound webhook payload + auth decisions +
-     * applied/not-applied outcomes) lands in storage/logs/bdapps.log
-     * with the JSON formatter configured in config/logging.php.
-     */
-    protected function log()
-    {
-        return Log::channel((string) config('bdapps.log_channel', 'bdapps'));
-    }
 
     public function handle(Request $request): JsonResponse
     {
@@ -55,7 +48,7 @@ class BdAppsNotifyController extends Controller
 
         // Always log the full inbound payload first so even auth
         // failures leave a forensic trail in the bdapps channel.
-        $this->log()->info('bdapps.notify_received', [
+        Log::channel('bdapps')->info('bdapps.notify_received', [
             'ip' => $request->ip(),
             'headers' => [
                 'x-bdapps-secret' => $request->header('X-Bdapps-Secret'),
@@ -65,7 +58,7 @@ class BdAppsNotifyController extends Controller
         ]);
 
         if ($expectedAppId === '') {
-            $this->log()->error('bdapps.notify_misconfigured');
+            Log::channel('bdapps')->error('bdapps.notify_misconfigured');
 
             return response()->json([
                 'statusCode' => 'E1000',
@@ -75,7 +68,7 @@ class BdAppsNotifyController extends Controller
 
         // Application id must match our provisioned app.
         if ($providedAppId !== $expectedAppId) {
-            $this->log()->warning('bdapps.notify_app_id_mismatch', [
+            Log::channel('bdapps')->warning('bdapps.notify_app_id_mismatch', [
                 'provided' => $providedAppId,
                 'ip' => $request->ip(),
             ]);
@@ -88,7 +81,7 @@ class BdAppsNotifyController extends Controller
 
         // If a notify_secret is configured, the call must present it.
         if ($expectedSecret !== '' && ! hash_equals($expectedSecret, $providedSecret)) {
-            $this->log()->warning('bdapps.notify_secret_mismatch', [
+            Log::channel('bdapps')->warning('bdapps.notify_secret_mismatch', [
                 'ip' => $request->ip(),
             ]);
 
@@ -103,7 +96,7 @@ class BdAppsNotifyController extends Controller
         $frequency = $request->input('frequency');
 
         if ($subscriberId === '' || $status === '') {
-            $this->log()->warning('bdapps.notify_missing_fields', [
+            Log::channel('bdapps')->warning('bdapps.notify_missing_fields', [
                 'subscriberId' => $subscriberId,
                 'status' => $status,
             ]);
@@ -116,7 +109,7 @@ class BdAppsNotifyController extends Controller
 
         $phone = $this->bdApps->extractLocalPhone($subscriberId);
         if ($phone === null) {
-            $this->log()->warning('bdapps.notify_invalid_subscriber_id', [
+            Log::channel('bdapps')->warning('bdapps.notify_invalid_subscriber_id', [
                 'subscriberId' => $subscriberId,
             ]);
 
@@ -131,7 +124,7 @@ class BdAppsNotifyController extends Controller
             // Unknown phone — BDApps might notify us about a number
             // that unsubscribed before completing registration.
             // Acknowledge anyway so BDApps doesn't retry forever.
-            $this->log()->info('bdapps.notify_unknown_phone', [
+            Log::channel('bdapps')->info('bdapps.notify_unknown_phone', [
                 'phone' => $phone,
                 'subscriberId' => $subscriberId,
             ]);
@@ -144,7 +137,7 @@ class BdAppsNotifyController extends Controller
 
         $this->subscriptionService->applyNotifyStatus($user, $status, $frequency);
 
-        $this->log()->info('bdapps.notify_applied', [
+        Log::channel('bdapps')->info('bdapps.notify_applied', [
             'user_id' => $user->id,
             'phone' => $phone,
             'subscriberId' => $subscriberId,
