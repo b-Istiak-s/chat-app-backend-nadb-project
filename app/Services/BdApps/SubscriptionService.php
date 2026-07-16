@@ -2,15 +2,21 @@
 
 namespace App\Services\BdApps;
 
+use App\Exceptions\BdApps\BdAppsException;
 use App\Models\BdappsSubscription;
 use App\Models\User;
 use App\Repositories\BdappsSubscriptionRepository;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Log;
 
 /**
  * Orchestrates the BDApps subscription lifecycle around a User.
  * All raw HTTP work lives in BdAppsService; data access goes through
  * BdappsSubscriptionRepository.
+ *
+ * Every error path writes a structured entry to the dedicated `bdapps`
+ * log channel so the full conversation between our backend and the
+ * Robi gateway lands in storage/logs/bdapps-YYYY-MM-DD.log.
  */
 class SubscriptionService
 {
@@ -18,17 +24,6 @@ class SubscriptionService
         private BdAppsService $bdApps,
         private BdappsSubscriptionRepository $subscriptions,
     ) {}
-
-    /**
-     * Resolve the dedicated BDApps log channel so high-level
-     * orchestrator events (otp_request_failed, verify_failed,
-     * unsubscribe_failed, apply_notify_status) land alongside
-     * the per-request entries BdAppsService writes.
-     */
-    protected function log()
-    {
-        return Log::channel((string) config('bdapps.log_channel', 'bdapps'));
-    }
 
     /**
      * Start (or restart) a subscription for the given user. Calls
@@ -54,13 +49,23 @@ class SubscriptionService
 
         try {
             $otpResult = $this->bdApps->requestOtp($user->phone);
-        } catch (\Throwable $e) {
-            // Transport-level failure (timeout, DNS, TLS, HTTP parse).
-            // /otp/request never produced a reference_no, so we don't
-            // even start a row — the next login will retry.
-            $this->log()->error('bdapps.subscribe_failed_on_register', [
+        } catch (BdAppsException $e) {
+            // Gateway rejected the request (e.g. E1312 invalid payload,
+            // E1325 invalid subscriber id). Log structured fields so we
+            // can correlate to the matching bdapps.otp.request entry.
+            Log::channel('bdapps')->error('bdapps.subscribe_failed_on_register', [
                 'phone' => $user->phone,
-                'error' => $e->getMessage(),
+                'status_code' => $e->statusCode,
+                'status_detail' => $e->statusDetail,
+            ]);
+            throw $e;
+        } catch (ConnectionException $e) {
+            // Transport-level failure (timeout, DNS, TLS, refused).
+            // No reference_no was issued; we don't even create a row —
+            // the next login will retry from scratch.
+            Log::channel('bdapps')->error('bdapps.subscribe_failed_on_register', [
+                'phone' => $user->phone,
+                'transport_error' => $e->getMessage(),
             ]);
             throw $e;
         }
@@ -76,16 +81,6 @@ class SubscriptionService
             'started_at' => now(),
             'raw_otp_request_response' => $otpResult['raw'] ?? null,
         ]);
-
-        if (! ($otpResult['ok'] ?? false)) {
-            $this->log()->error('bdapps.otp_request_failed', [
-                'user_id' => $user->id,
-                'phone' => $user->phone,
-                'status_code' => $otpResult['status_code'] ?? null,
-                'status_detail' => $otpResult['status_detail'] ?? null,
-                'http_status' => $otpResult['http_status'] ?? null,
-            ]);
-        }
 
         return [
             'subscription' => $subscription,
@@ -122,21 +117,28 @@ class SubscriptionService
                     'cancelled_at' => now(),
                 ]);
             }
-
-            if (! ($result['ok'] ?? false)) {
-                $this->log()->error('bdapps.unsubscribe_failed', [
-                    'user_id' => $user->id,
-                    'phone' => $user->phone,
-                    'status_code' => $result['status_code'] ?? null,
-                    'status_detail' => $result['status_detail'] ?? null,
-                    'http_status' => $result['http_status'] ?? null,
-                ]);
-            }
-        } catch (\Throwable $e) {
-            $this->log()->error('bdapps.unsubscribe_failed', [
+        } catch (BdAppsException $e) {
+            Log::channel('bdapps')->error('bdapps.unsubscribe_failed', [
                 'user_id' => $user->id,
                 'phone' => $user->phone,
-                'error' => $e->getMessage(),
+                'status_code' => $e->statusCode,
+                'status_detail' => $e->statusDetail,
+            ]);
+
+            if ($subscription) {
+                $this->subscriptions->update($subscription->id, [
+                    'status' => BdappsSubscription::STATUS_UNREGISTERED,
+                    'cancelled_at' => now(),
+                    'error_code' => 'unsubscribe_failed',
+                    'error_message' => $e->getMessage(),
+                ]);
+                $subscription->refresh();
+            }
+        } catch (ConnectionException $e) {
+            Log::channel('bdapps')->error('bdapps.unsubscribe_failed', [
+                'user_id' => $user->id,
+                'phone' => $user->phone,
+                'transport_error' => $e->getMessage(),
             ]);
 
             if ($subscription) {
@@ -170,7 +172,23 @@ class SubscriptionService
             return $subscription->reference_no;
         }
 
-        $result = $this->bdApps->requestOtp($user->phone);
+        try {
+            $result = $this->bdApps->requestOtp($user->phone);
+        } catch (BdAppsException $e) {
+            Log::channel('bdapps')->error('bdapps.otp_request_failed', [
+                'phone' => $user->phone,
+                'status_code' => $e->statusCode,
+                'status_detail' => $e->statusDetail,
+            ]);
+            throw $e;
+        } catch (ConnectionException $e) {
+            Log::channel('bdapps')->error('bdapps.otp_request_failed', [
+                'phone' => $user->phone,
+                'transport_error' => $e->getMessage(),
+            ]);
+            throw $e;
+        }
+
         $referenceNo = $result['reference_no'] ?? null;
 
         if ($subscription && $referenceNo) {
@@ -186,38 +204,47 @@ class SubscriptionService
     /**
      * Verify the OTP at BDApps and, on success, mark the user as
      * subscribed. The gateway flips subscriptionStatus to REGISTERED on
-     * success — we mirror that locally.
+     * success — we mirror that locally. Wrong/invalid OTPs come back
+     * as a gateway error and are logged to the bdapps channel.
      */
     public function verifyOtp(User $user, string $otp): array
     {
         $referenceNo = $this->ensureOtpReference($user);
 
-        $result = $this->bdApps->verifyOtp($referenceNo, $otp);
-
-        if ($result['ok'] ?? false) {
-            $user->forceFill([
-                'subscription_status' => 'subscribed',
-                'subscribed_at' => now(),
-                'phone_verified_at' => now(),
-            ])->save();
-
-            $subscription = $this->subscriptions->latestForUser($user->id);
-            if ($subscription) {
-                $this->subscriptions->update($subscription->id, [
-                    'status' => BdappsSubscription::STATUS_REGISTERED,
-                    'bdapps_subscription_status' => $result['subscription_status']
-                        ?? BdappsSubscription::STATUS_REGISTERED,
-                    'reference_no' => null,
-                ]);
-            }
-        } else {
-            $this->log()->error('bdapps.verify_failed', [
+        try {
+            $result = $this->bdApps->verifyOtp($referenceNo, $otp);
+        } catch (BdAppsException $e) {
+            Log::channel('bdapps')->error('bdapps.verify_failed', [
                 'user_id' => $user->id,
                 'phone' => $user->phone,
                 'reference_no' => $referenceNo,
-                'status_code' => $result['status_code'] ?? null,
-                'status_detail' => $result['status_detail'] ?? null,
-                'http_status' => $result['http_status'] ?? null,
+                'status_code' => $e->statusCode,
+                'status_detail' => $e->statusDetail,
+            ]);
+            throw $e;
+        } catch (ConnectionException $e) {
+            Log::channel('bdapps')->error('bdapps.verify_failed', [
+                'user_id' => $user->id,
+                'phone' => $user->phone,
+                'reference_no' => $referenceNo,
+                'transport_error' => $e->getMessage(),
+            ]);
+            throw $e;
+        }
+
+        $user->forceFill([
+            'subscription_status' => 'subscribed',
+            'subscribed_at' => now(),
+            'phone_verified_at' => now(),
+        ])->save();
+
+        $subscription = $this->subscriptions->latestForUser($user->id);
+        if ($subscription) {
+            $this->subscriptions->update($subscription->id, [
+                'status' => BdappsSubscription::STATUS_REGISTERED,
+                'bdapps_subscription_status' => $result['subscription_status']
+                    ?? BdappsSubscription::STATUS_REGISTERED,
+                'reference_no' => null,
             ]);
         }
 
