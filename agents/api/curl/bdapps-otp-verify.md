@@ -21,7 +21,7 @@ curl \
   -H "Content-Type: application/json" \
   -d '{
     "applicationId": "APP_137539",
-    "password": "c2dd7d7ab475be8a6175f3f318856541",
+    "password": "<BDAPPS_PASSWORD>",
     "referenceNo": "REF-12345",
     "otp": "1234"
   }'
