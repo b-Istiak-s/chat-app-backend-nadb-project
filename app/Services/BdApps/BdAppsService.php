@@ -52,7 +52,14 @@ class BdAppsService
 
         $body = $response->json() ?? [];
         $httpStatus = $response->status();
-        $this->logCall('otp.request', $payload, $body, $httpStatus);
+
+        $logPayload = $payload;
+        $logPayload['password'] = '****';
+        Log::channel('bdapps')->info('bdapps.otp.request', [
+            'http_status' => $httpStatus,
+            'request' => $logPayload,
+            'response' => $body,
+        ]);
 
         return $this->finalize('otp request', [
             'ok' => $response->successful() && ! $this->isError($body),
@@ -83,7 +90,14 @@ class BdAppsService
 
         $body = $response->json() ?? [];
         $httpStatus = $response->status();
-        $this->logCall('otp.verify', $payload, $body, $httpStatus);
+
+        $logPayload = $payload;
+        $logPayload['password'] = '****';
+        Log::channel('bdapps')->info('bdapps.otp.verify', [
+            'http_status' => $httpStatus,
+            'request' => $logPayload,
+            'response' => $body,
+        ]);
 
         return $this->finalize('otp verify', [
             'ok' => $response->successful() && ! $this->isError($body),
@@ -113,7 +127,14 @@ class BdAppsService
 
         $body = $response->json() ?? [];
         $httpStatus = $response->status();
-        $this->logCall('subscription.getStatus', $payload, $body, $httpStatus);
+
+        $logPayload = $payload;
+        $logPayload['password'] = '****';
+        Log::channel('bdapps')->info('bdapps.subscription.getStatus', [
+            'http_status' => $httpStatus,
+            'request' => $logPayload,
+            'response' => $body,
+        ]);
 
         // getStatus can return S1000 even when the user is UNREGISTERED.
         // "Errors" here are reserved for transport / auth failures, not
@@ -163,7 +184,14 @@ class BdAppsService
 
         $body = $response->json() ?? [];
         $httpStatus = $response->status();
-        $this->logCall('subscription.send', $payload, $body, $httpStatus);
+
+        $logPayload = $payload;
+        $logPayload['password'] = '****';
+        Log::channel('bdapps')->info('bdapps.subscription.send', [
+            'http_status' => $httpStatus,
+            'request' => $logPayload,
+            'response' => $body,
+        ]);
 
         return $this->finalize('subscription '.$action, [
             'ok' => $response->successful() && ! $this->isError($body),
@@ -276,20 +304,6 @@ class BdAppsService
         }
 
         return $code !== (string) config('bdapps.success_status_code', 'S1000');
-    }
-
-    protected function logCall(string $endpoint, array $payload, array $body, int $httpStatus): void
-    {
-        $logPayload = $payload;
-        if (isset($logPayload['password'])) {
-            $logPayload['password'] = '****';
-        }
-
-        Log::channel('bdapps')->info("bdapps.{$endpoint}", [
-            'http_status' => $httpStatus,
-            'request' => $logPayload,
-            'response' => $body,
-        ]);
     }
 
     /**
