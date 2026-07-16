@@ -34,6 +34,17 @@ class BdAppsNotifyController extends Controller
         private BdAppsService $bdApps,
     ) {}
 
+    /**
+     * Resolve the dedicated BDApps log channel so every entry this
+     * controller writes (inbound webhook payload + auth decisions +
+     * applied/not-applied outcomes) lands in storage/logs/bdapps.log
+     * with the JSON formatter configured in config/logging.php.
+     */
+    protected function log()
+    {
+        return Log::channel((string) config('bdapps.log_channel', 'bdapps'));
+    }
+
     public function handle(Request $request): JsonResponse
     {
         $expectedAppId = (string) config('bdapps.application_id');
@@ -42,8 +53,19 @@ class BdAppsNotifyController extends Controller
         $providedSecret = (string) ($request->header('X-Bdapps-Secret')
             ?? $request->input('notify_secret', ''));
 
+        // Always log the full inbound payload first so even auth
+        // failures leave a forensic trail in the bdapps channel.
+        $this->log()->info('bdapps.notify_received', [
+            'ip' => $request->ip(),
+            'headers' => [
+                'x-bdapps-secret' => $request->header('X-Bdapps-Secret'),
+                'content_type' => $request->header('Content-Type'),
+            ],
+            'payload' => $request->all(),
+        ]);
+
         if ($expectedAppId === '') {
-            Log::error('bdapps.notify_misconfigured');
+            $this->log()->error('bdapps.notify_misconfigured');
 
             return response()->json([
                 'statusCode' => 'E1000',
@@ -53,7 +75,7 @@ class BdAppsNotifyController extends Controller
 
         // Application id must match our provisioned app.
         if ($providedAppId !== $expectedAppId) {
-            Log::warning('bdapps.notify_app_id_mismatch', [
+            $this->log()->warning('bdapps.notify_app_id_mismatch', [
                 'provided' => $providedAppId,
                 'ip' => $request->ip(),
             ]);
@@ -66,7 +88,7 @@ class BdAppsNotifyController extends Controller
 
         // If a notify_secret is configured, the call must present it.
         if ($expectedSecret !== '' && ! hash_equals($expectedSecret, $providedSecret)) {
-            Log::warning('bdapps.notify_secret_mismatch', [
+            $this->log()->warning('bdapps.notify_secret_mismatch', [
                 'ip' => $request->ip(),
             ]);
 
@@ -81,6 +103,11 @@ class BdAppsNotifyController extends Controller
         $frequency = $request->input('frequency');
 
         if ($subscriberId === '' || $status === '') {
+            $this->log()->warning('bdapps.notify_missing_fields', [
+                'subscriberId' => $subscriberId,
+                'status' => $status,
+            ]);
+
             return response()->json([
                 'statusCode' => 'E1002',
                 'statusDetail' => 'Missing subscriberId or status.',
@@ -89,6 +116,10 @@ class BdAppsNotifyController extends Controller
 
         $phone = $this->bdApps->extractLocalPhone($subscriberId);
         if ($phone === null) {
+            $this->log()->warning('bdapps.notify_invalid_subscriber_id', [
+                'subscriberId' => $subscriberId,
+            ]);
+
             return response()->json([
                 'statusCode' => 'E1003',
                 'statusDetail' => 'Invalid subscriberId.',
@@ -100,7 +131,10 @@ class BdAppsNotifyController extends Controller
             // Unknown phone — BDApps might notify us about a number
             // that unsubscribed before completing registration.
             // Acknowledge anyway so BDApps doesn't retry forever.
-            Log::info('bdapps.notify_unknown_phone', ['phone' => $phone]);
+            $this->log()->info('bdapps.notify_unknown_phone', [
+                'phone' => $phone,
+                'subscriberId' => $subscriberId,
+            ]);
 
             return response()->json([
                 'statusCode' => 'S1000',
@@ -110,11 +144,13 @@ class BdAppsNotifyController extends Controller
 
         $this->subscriptionService->applyNotifyStatus($user, $status, $frequency);
 
-        Log::info('bdapps.notify_applied', [
+        $this->log()->info('bdapps.notify_applied', [
             'user_id' => $user->id,
             'phone' => $phone,
+            'subscriberId' => $subscriberId,
             'status' => $status,
             'frequency' => $frequency,
+            'timeStamp' => $request->input('timeStamp'),
         ]);
 
         return response()->json([
