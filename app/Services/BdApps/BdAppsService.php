@@ -2,6 +2,7 @@
 
 namespace App\Services\BdApps;
 
+use App\Exceptions\BdApps\BdAppsException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -50,16 +51,17 @@ class BdAppsService
             ->post(config('bdapps.base_url').config('bdapps.otp_request_endpoint'), $payload);
 
         $body = $response->json() ?? [];
-        $this->logCall('otp.request', $payload, $body, $response->status());
+        $httpStatus = $response->status();
+        $this->logCall('otp.request', $payload, $body, $httpStatus);
 
-        return [
+        return $this->finalize('otp request', [
             'ok' => $response->successful() && ! $this->isError($body),
-            'http_status' => $response->status(),
+            'http_status' => $httpStatus,
             'reference_no' => $body['referenceNo'] ?? null,
             'status_code' => $body['statusCode'] ?? null,
             'status_detail' => $body['statusDetail'] ?? null,
             'raw' => $body,
-        ];
+        ], $httpStatus);
     }
 
     /**
@@ -80,16 +82,17 @@ class BdAppsService
             ->post(config('bdapps.base_url').config('bdapps.otp_verify_endpoint'), $payload);
 
         $body = $response->json() ?? [];
-        $this->logCall('otp.verify', $payload, $body, $response->status());
+        $httpStatus = $response->status();
+        $this->logCall('otp.verify', $payload, $body, $httpStatus);
 
-        return [
+        return $this->finalize('otp verify', [
             'ok' => $response->successful() && ! $this->isError($body),
-            'http_status' => $response->status(),
+            'http_status' => $httpStatus,
             'subscription_status' => $body['subscriptionStatus'] ?? null,
             'status_code' => $body['statusCode'] ?? null,
             'status_detail' => $body['statusDetail'] ?? null,
             'raw' => $body,
-        ];
+        ], $httpStatus);
     }
 
     /**
@@ -109,19 +112,20 @@ class BdAppsService
             ->post(config('bdapps.base_url').config('bdapps.status_endpoint'), $payload);
 
         $body = $response->json() ?? [];
-        $this->logCall('subscription.getStatus', $payload, $body, $response->status());
+        $httpStatus = $response->status();
+        $this->logCall('subscription.getStatus', $payload, $body, $httpStatus);
 
         // getStatus can return S1000 even when the user is UNREGISTERED.
         // "Errors" here are reserved for transport / auth failures, not
         // for "user is not subscribed".
-        return [
+        return $this->finalize('getStatus', [
             'ok' => $response->successful(),
-            'http_status' => $response->status(),
+            'http_status' => $httpStatus,
             'subscription_status' => $body['subscriptionStatus'] ?? null,
             'status_code' => $body['statusCode'] ?? null,
             'status_detail' => $body['statusDetail'] ?? null,
             'raw' => $body,
-        ];
+        ], $httpStatus);
     }
 
     /**
@@ -158,16 +162,17 @@ class BdAppsService
             ->post(config('bdapps.base_url').config('bdapps.subscription_endpoint'), $payload);
 
         $body = $response->json() ?? [];
-        $this->logCall('subscription.send', $payload, $body, $response->status());
+        $httpStatus = $response->status();
+        $this->logCall('subscription.send', $payload, $body, $httpStatus);
 
-        return [
+        return $this->finalize('subscription '.$action, [
             'ok' => $response->successful() && ! $this->isError($body),
-            'http_status' => $response->status(),
+            'http_status' => $httpStatus,
             'subscription_status' => $body['subscriptionStatus'] ?? null,
             'status_code' => $body['statusCode'] ?? null,
             'status_detail' => $body['statusDetail'] ?? null,
             'raw' => $body,
-        ];
+        ], $httpStatus);
     }
 
     /**
@@ -285,5 +290,25 @@ class BdAppsService
             'request' => $logPayload,
             'response' => $body,
         ]);
+    }
+
+    /**
+     * Gateway-facing success gate. Returns the parsed array untouched
+     * when the gateway said `ok`, otherwise throws a BdAppsException
+     * carrying the gateway's statusCode/statusDetail + our HTTP status
+     * so callers can log structured fields without re-parsing.
+     */
+    protected function finalize(string $op, array $result, int $httpStatus): array
+    {
+        if ($result['ok']) {
+            return $result;
+        }
+
+        throw new BdAppsException(
+            "BDApps {$op} failed",
+            statusCode: $result['status_code'] ?? null,
+            statusDetail: $result['status_detail'] ?? null,
+            httpStatus: $httpStatus,
+        );
     }
 }
