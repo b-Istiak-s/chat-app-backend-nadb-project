@@ -6,6 +6,7 @@ use App\Models\ChatConversation;
 use App\Models\ChatMessage;
 use App\Models\User;
 use App\Services\OpenRouterService;
+use App\Services\SmsService;
 use Generator;
 
 /**
@@ -18,7 +19,7 @@ use Generator;
  */
 class ChatService
 {
-    private const SYSTEM_PROMPT = <<<TEXT
+    private const SYSTEM_PROMPT = <<<'TEXT'
 You are a helpful, friendly AI assistant in a chat app used by people in Bangladesh.
 Keep replies concise, conversational, and respectful. Reply in the same language the
 user writes in (Bangla or English).
@@ -26,6 +27,7 @@ TEXT;
 
     public function __construct(
         private OpenRouterService $openRouter,
+        private SmsService $smsService,
     ) {}
 
     public function getOrCreateConversation(User $user): ChatConversation
@@ -85,7 +87,7 @@ TEXT;
         $accumulated = '';
         $fullResponse = $this->openRouter->chat(
             $messages,
-            function (string $chunk) use (&$accumulated, $user) {
+            function (string $chunk) use (&$accumulated) {
                 $accumulated .= $chunk;
                 echo 'data: '.json_encode(['chunk' => $chunk], JSON_UNESCAPED_UNICODE)."\n\n";
                 if (ob_get_level() > 0) {
@@ -106,6 +108,16 @@ TEXT;
             'role' => 'assistant',
             'content' => $fullResponse,
         ]);
+
+        // 4b. Fire a milestone SMS if this turn just crossed a
+        // multiple of SmsService::STEP. Counting assistant messages
+        // (rather than user messages) keeps the cadence tied to
+        // completed AI responses — a turn that aborts mid-stream
+        // doesn't burn a milestone.
+        $assistantTurns = $conversation->messages()
+            ->where('role', 'assistant')
+            ->count();
+        $this->smsService->maybeNotifyMilestone($user, (int) $assistantTurns);
 
         // 5. Yield done event.
         echo 'data: '.json_encode([
