@@ -97,14 +97,21 @@ class SubscriptionService
     {
         $subscription = $this->subscriptions->latestForUser($user->id);
 
+        // Prefer the gateway-canonical base64 subscriber id when we
+        // have it (more likely to round-trip cleanly on the gateway).
+        $gatewaySubscriberId = $subscription?->gateway_subscriber_id;
+
         try {
-            $result = $this->bdApps->unsubscribe($user->phone);
+            $result = $this->bdApps->unsubscribe($user->phone, $gatewaySubscriberId);
 
             if ($subscription) {
                 $this->subscriptions->update($subscription->id, [
                     'status' => BdappsSubscription::STATUS_UNREGISTERED,
                     'bdapps_subscription_status' => $result['subscription_status'] ?? 'UNREGISTERED',
                     'cancelled_at' => now(),
+                    // Refresh the base64 id if the gateway echoed it back.
+                    'gateway_subscriber_id' => $result['gateway_subscriber_id']
+                        ?? $subscription->gateway_subscriber_id,
                 ]);
                 $subscription->refresh();
             } else {
@@ -112,6 +119,7 @@ class SubscriptionService
                     'user_id' => $user->id,
                     'phone' => $user->phone,
                     'subscriber_id' => $this->bdApps->formatSubscriberId($user->phone),
+                    'gateway_subscriber_id' => $gatewaySubscriberId,
                     'status' => BdappsSubscription::STATUS_UNREGISTERED,
                     'bdapps_subscription_status' => $result['subscription_status'] ?? 'UNREGISTERED',
                     'cancelled_at' => now(),
@@ -206,6 +214,16 @@ class SubscriptionService
      * subscribed. The gateway flips subscriptionStatus to REGISTERED on
      * success — we mirror that locally. Wrong/invalid OTPs come back
      * as a gateway error and are logged to the bdapps channel.
+     *
+     * If the gateway returns one of the "still charging" statuses
+     * (e.g. `INITIAL CHARGING PENDING`) the user is optimistically
+     * marked subscribed (so the auth flow can return a Sanctum token)
+     * but the subscription row stays at `status='pending'` so the
+     * `bdapps:poll-pending` cron can reconcile later.
+     *
+     * The gateway's base64 `subscriberId` from the response is
+     * persisted as `gateway_subscriber_id` on the row, so future
+     * /subscription/send calls can use the gateway-canonical form.
      */
     public function verifyOtp(User $user, string $otp): array
     {
@@ -232,6 +250,12 @@ class SubscriptionService
             throw $e;
         }
 
+        $gatewayStatus = strtoupper((string) ($result['subscription_status'] ?? ''));
+        $isRegistered = $gatewayStatus === 'REGISTERED';
+        $isPending = $this->bdApps->isPendingStatus($gatewayStatus);
+
+        // Optimistic activation: user gets a token regardless. The
+        // local subscription row carries the more truthful state.
         $user->forceFill([
             'subscription_status' => 'subscribed',
             'subscribed_at' => now(),
@@ -241,10 +265,21 @@ class SubscriptionService
         $subscription = $this->subscriptions->latestForUser($user->id);
         if ($subscription) {
             $this->subscriptions->update($subscription->id, [
-                'status' => BdappsSubscription::STATUS_REGISTERED,
-                'bdapps_subscription_status' => $result['subscription_status']
-                    ?? BdappsSubscription::STATUS_REGISTERED,
+                // REGISTERED → fully active. Anything else → if it's a
+                // known "still charging" status, keep pending so the
+                // cron can flip later; otherwise default to registered
+                // (defensive — gateway already accepted the verify).
+                'status' => $isRegistered
+                    ? BdappsSubscription::STATUS_REGISTERED
+                    : ($isPending
+                        ? BdappsSubscription::STATUS_PENDING
+                        : BdappsSubscription::STATUS_REGISTERED),
+                'bdapps_subscription_status' => $gatewayStatus !== ''
+                    ? $gatewayStatus
+                    : BdappsSubscription::STATUS_REGISTERED,
                 'reference_no' => null,
+                'gateway_subscriber_id' => $result['gateway_subscriber_id']
+                    ?? $subscription->gateway_subscriber_id,
             ]);
         }
 

@@ -3,6 +3,8 @@
 namespace App\Repositories;
 
 use App\Models\BdappsSubscription;
+use DateTimeInterface;
+use Illuminate\Support\Collection;
 
 class BdappsSubscriptionRepository
 {
@@ -34,5 +36,23 @@ class BdappsSubscriptionRepository
             ->where('status', BdappsSubscription::STATUS_REGISTERED)
             ->orderByDesc('id')
             ->first();
+    }
+
+    /**
+     * Pending subscription rows whose `started_at` is at or before
+     * `$olderThan`. Used by the reconciliation cronjob to find rows
+     * that have been waiting long enough to be worth polling.
+     *
+     * Only rows with `status='pending'` are returned — registered and
+     * unregistered rows are skipped (the cron should be a no-op for
+     * them).
+     */
+    public function pendingForPolling(DateTimeInterface $olderThan): Collection
+    {
+        return BdappsSubscription::where('status', BdappsSubscription::STATUS_PENDING)
+            ->where('started_at', '<=', $olderThan)
+            ->with('user')
+            ->orderBy('id')
+            ->get();
     }
 }
