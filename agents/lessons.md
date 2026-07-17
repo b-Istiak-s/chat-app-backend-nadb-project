@@ -85,3 +85,52 @@ self-evident.
 **Check next time:** Only reach for a logging helper when the channel
 is genuinely dynamic per call (e.g. resolved from a per-tenant
 config). For everything else, spell the channel out at the call site.
+
+## 2026-07-17 — `INITIAL CHARGING PENDING` is not yet `REGISTERED`
+
+**What was flawed:** `SubscriptionService::verifyOtp` flipped the user
+to `subscribed` for **any** non-throwing gateway response. The Robi
+gateway answers `/subscription/otp/verify` with HTTP 200 +
+`statusCode: S1000` even when the subscription is still being
+processed — the `subscriptionStatus` field carries
+`INITIAL CHARGING PENDING` in that case. Treating it as success
+silently granted a Sanctum token for a subscription that may never
+activate.
+
+**Correction:** `verifyOtp` now branches on `subscriptionStatus`:
+
+- `REGISTERED` → row `status='registered'`, user `subscribed`.
+- `INITIAL CHARGING PENDING` / `CHARGE_PENDING` / `PENDING` (via
+  `BdAppsService::PENDING_STATUSES`) → user optimistically
+  `subscribed` (token still issued, per product decision), row stays
+  at `status='pending'` so the `bdapps:poll-pending` cron can
+  reconcile later.
+- Anything else → default to `registered` (defensive; gateway already
+  accepted the verify).
+
+**Check next time:** Any verify / status response must inspect
+`subscriptionStatus` — gateway success codes (`S1000`) only mean the
+HTTP round-trip worked, not that the user's subscription is active.
+A "still charging" branch is mandatory for any async subscription
+flow.
+
+## 2026-07-17 — Persist the gateway's base64 `subscriberId`
+
+**What was flawed:** `bdapps_subscriptions.subscriber_id` only held
+the locally-derived `tel:880…` form. The Robi gateway, however, treats
+the base64 wire identifier it returns from verify / getStatus /
+notify (e.g. `tel:ZWRhY2Y5N2Y…`) as the canonical subscriber id.
+Sending the locally-derived form back to `/subscription/send` works
+in practice but is a mismatch the gateway docs explicitly flag.
+
+**Correction:** A new column `bdapps_subscriptions.gateway_subscriber_id`
+holds the base64 form once the gateway reveals it (typically on
+verify). `BdAppsService::unsubscribe()`,
+`SubscriptionService::cancelSubscription()` and the
+`bdapps:poll-pending` cron all prefer `gateway_subscriber_id` when
+present and fall back to the `tel:880…` form derived from the phone.
+
+**Check next time:** Any time the gateway returns a `subscriberId` in a
+response body, persist it as-is. Don't try to parse base64 or
+re-derive it from the phone — the gateway is the source of truth for
+its own identifier.

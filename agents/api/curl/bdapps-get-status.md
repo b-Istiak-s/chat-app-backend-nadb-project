@@ -61,6 +61,12 @@ only positive result; anything else is "not subscribed".
 ## Implementation
 
 - Service: `app/Services/BdApps/BdAppsService.php` (`getStatus()`).
-- (Currently unused in the happy path — `/start` short-circuits when
-  the user is already subscribed. Kept for the future cron-driven
-  reconciliation job.)
+- Called by the `bdapps:poll-pending` artisan command
+  (`app/Console/Commands/PollPendingBdappsSubscriptionsCommand.php`),
+  scheduled every 5 minutes via `routes/console.php`. Only touches
+  rows with local `status='pending'` and `started_at <= now() - 5min`;
+  registered / unregistered rows are skipped.
+- When the gateway returns a `subscriberId` in its body (the base64
+  wire form), it is persisted on `bdapps_subscriptions
+  .gateway_subscriber_id` and used for future `/subscription/send`
+  calls (e.g. unsubscribe).
