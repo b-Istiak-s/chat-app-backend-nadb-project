@@ -239,3 +239,35 @@ null and we fall through to the legacy `tel:880…` path.
 re-checks) should prefer the persisted `gateway_subscriber_id` over
 re-deriving from the phone. The phone is what *we* know; the gateway
 id is what *the gateway* knows — match the gateway on its own terms.
+
+## 2026-07-17 — `env()` outside config files silently returns null in prod
+
+**What was flawed:** Both `SmsService::maybeNotifyMilestone` and
+`SubscriptionService::notifyLogin` had
+`if (! filter_var(env('FOO_ENABLED', false), FILTER_VALIDATE_BOOLEAN))`.
+In local dev this works because Laravel's bootstrap leaves `$_ENV`
+populated. In production `php artisan config:cache` rebuilds the
+config from the `.env` file and clears the env vars from runtime —
+so `env('FOO_ENABLED')` returns `null` for every later request, and
+`filter_var(null, FILTER_VALIDATE_BOOLEAN)` is `false`. The feature
+gate silently stayed closed in prod, no matter what we put in `.env`.
+
+**Root cause:** Confusing `env()` (a one-shot read from
+`$_ENV`/`getenv`) with `config()` (a cached, repository-backed lookup).
+`env()` is only safe inside `config/*.php` files — outside that, it's
+a debugging convenience that goes away the moment config is cached.
+
+**Correction:** Moved both flags to `config/bdapps.php` keys
+`login_sms_notify_enabled` and `milestone_sms_enabled`, casting each
+with `filter_var(env(...), FILTER_VALIDATE_BOOLEAN)` at config-load
+time. Callers now do
+`if (! (bool) config('bdapps.bdapps.<flag>', false))` — same intent,
+but `config()` reads from the cached repository and works in every
+environment.
+
+**Check next time:** Audit services / controllers / jobs / commands
+for `env()`. Every read outside `config/*.php` is a latent prod bug —
+either move the value to `config/*.php` (preferred) or, if a
+runtime-only override is genuinely needed, push the lookup to a
+service provider that runs during bootstrap. Treat "config didn't
+take effect in production" as a default symptom of this mistake.

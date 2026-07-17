@@ -50,9 +50,12 @@ class SmsService
             return;
         }
 
-        // Feature flag: opt-in via env so tests / local dev aren't
-        // accidentally sending real SMS to developer phones.
-        if (! filter_var(env('CHAT_MILESTONE_SMS_ENABLED', false), FILTER_VALIDATE_BOOLEAN)) {
+        // Feature flag: opt-in via config so tests / local dev aren't
+        // accidentally sending real SMS to developer phones. Always read
+        // via config() — Laravel clears env() between requests once
+        // config is cached, so env() returns null and the gate
+        // silently evaluates false in production.
+        if (! (bool) config('bdapps.milestone_sms_enabled', false)) {
             return;
         }
 

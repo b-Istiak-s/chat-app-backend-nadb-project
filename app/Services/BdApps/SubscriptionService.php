@@ -296,13 +296,15 @@ class SubscriptionService
      * gateway failures: a missed SMS should never log the user out
      * or fail the auth response.
      *
-     * If BDAPPS_LOGIN_SMS_NOTIFY_ENABLED is false (or unset to "0"),
+     * If `bdapps.login_sms_notify_enabled` is false (the default),
      * this is a no-op — useful for tests / local dev where we don't
-     * want to spam the gateway.
+     * want to spam the gateway. Read via config() (cached) rather than
+     * env() — outside of config loading, env() returns null in
+     * production and the gate silently evaluates false.
      */
     public function notifyLogin(User $user): void
     {
-        if (! filter_var(env('BDAPPS_LOGIN_SMS_NOTIFY_ENABLED', false), FILTER_VALIDATE_BOOLEAN)) {
+        if (! (bool) config('bdapps.login_sms_notify_enabled', false)) {
             return;
         }
 

@@ -67,4 +67,32 @@ return [
     // Webhook shared secret. Used by /api/webhooks/bdapps/notify to
     // authenticate incoming BDApps notifications via constant-time compare.
     'notify_secret' => env('BDAPPS_NOTIFY_SECRET', ''),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Feature flags (read via config() at runtime, never env() directly)
+    |--------------------------------------------------------------------------
+    |
+    | Feature flags live here so they're cached in the config repository.
+    | Calling env() outside the config loading phase returns null in
+    | production (Laravel clears the env between requests once config is
+    | cached), which makes every feature-flag gate silently false. Always
+    | read these via config('bdapps.*').
+    |
+    */
+
+    // Send a courtesy SMS when an already-trusted user (subscribed or
+    // pending) skips OTP and signs in directly. Defaults off — flip to
+    // true in production once the /sms/send path is wired in the gateway.
+    'login_sms_notify_enabled' => filter_var(
+        env('BDAPPS_LOGIN_SMS_NOTIFY_ENABLED', false),
+        FILTER_VALIDATE_BOOLEAN
+    ),
+
+    // Fire a milestone SMS via /sms/send every time a user completes
+    // their 5th, 10th, 15th… AI chat. Defaults off — enable in prod.
+    'milestone_sms_enabled' => filter_var(
+        env('CHAT_MILESTONE_SMS_ENABLED', false),
+        FILTER_VALIDATE_BOOLEAN
+    ),
 ];
