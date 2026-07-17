@@ -34,6 +34,25 @@ return [
 
     'status_endpoint' => env('BDAPPS_STATUS_ENDPOINT', '/subscription/getStatus'),
 
+    // POST /sms/send — Mobile-Terminated SMS outbound. Used for the
+    // milestone ping ("You've sent 5 chats today. Keep going!") and
+    // any other fan-out we add later.
+    'sms_send_endpoint' => env('BDAPPS_SMS_SEND_ENDPOINT', '/sms/send'),
+
+    // Default sender address (e.g. "tel:8801812345678"). When null the
+    // gateway uses the alias configured in the SLA. Override with
+    // BDAPPS_SMS_SOURCE_ADDRESS when you need a specific source.
+    'sms_source_address' => env('BDAPPS_SMS_SOURCE_ADDRESS', null),
+
+    // Request SMS Delivery Status Reports. Default off — we log every
+    // send locally to the bdapps channel anyway, the gateway DR adds
+    // another inbound webhook to maintain.
+    'sms_delivery_status_request' => env('BDAPPS_SMS_DELIVERY_STATUS', '0'),
+
+    // Encoding scheme for SMS payloads. 0 = plain text (default),
+    // 240 = flash, 245 = binary.
+    'sms_encoding' => env('BDAPPS_SMS_ENCODING', '0'),
+
     'timeout_seconds' => (int) env('BDAPPS_TIMEOUT', 30),
 
     'verify_ssl' => filter_var(env('BDAPPS_VERIFY_SSL', true), FILTER_VALIDATE_BOOLEAN),

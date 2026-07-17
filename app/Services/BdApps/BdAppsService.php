@@ -210,6 +210,95 @@ class BdAppsService
         return $this->callSubscriptionSend($phone, '1', $gatewaySubscriberId);
     }
 
+    /**
+     * `POST /sms/send` — Mobile-Terminated SMS.
+     *
+     * Sends a plain-text SMS to `$phone` (normalised via
+     * `formatSubscriberId()` to `tel:880…`). Used for milestone pings
+     * (every 5 AI chats) and any other fan-out notifications. The
+     * destination address is always a concrete phone number — we do
+     * NOT use `tel: all` (broadcast to the whole subscribed base) from
+     * this code path.
+     *
+     * Returns the same shape as the other gateway helpers:
+     *   - `ok`        — true on HTTP 200 + non-error status code
+     *   - `http_status`
+     *   - `request_id` — gateway `requestId` from the response
+     *   - `destination_responses` — per-address delivery response array
+     *   - `status_code`, `status_detail`, `raw`
+     *
+     * Throws `BdAppsException` on non-success — callers (`SmsService`)
+     * catch and log to the bdapps channel.
+     */
+    public function sendSms(
+        string $phone,
+        string $message,
+        ?string $sourceAddress = null,
+        ?string $encoding = null,
+        ?string $deliveryStatusRequest = null,
+    ): array {
+        $payload = [
+            'version' => '1.0',
+            'applicationId' => config('bdapps.application_id'),
+            'password' => config('bdapps.password'),
+            'message' => $message,
+            'destinationAddresses' => [$this->formatSubscriberId($phone)],
+        ];
+
+        // `sourceAddress` is optional (the gateway may fall back to the
+        // SLA-configured alias), so only set it if we actually have a
+        // value. This keeps the payload minimal by default.
+        if ($sourceAddress !== null && $sourceAddress !== '') {
+            $payload['sourceAddress'] = $sourceAddress;
+        } else {
+            $configuredSource = config('bdapps.sms_source_address');
+            if (is_string($configuredSource) && $configuredSource !== '') {
+                $payload['sourceAddress'] = $configuredSource;
+            }
+        }
+
+        $payload['deliveryStatusRequest'] = $deliveryStatusRequest
+            ?? (string) config('bdapps.sms_delivery_status_request', '0');
+
+        $payload['encoding'] = $encoding
+            ?? (string) config('bdapps.sms_encoding', '0');
+
+        $response = $this->http()
+            ->post(config('bdapps.base_url').config('bdapps.sms_send_endpoint'), $payload);
+
+        $body = $response->json() ?? [];
+        $httpStatus = $response->status();
+
+        $logPayload = $payload;
+        $logPayload['password'] = '****';
+        Log::channel('bdapps')->info('bdapps.sms.send', [
+            'http_status' => $httpStatus,
+            'request' => $logPayload,
+            'response' => $body,
+        ]);
+
+        $destinations = $body['destinationResponses'] ?? [];
+        $firstDestination = is_array($destinations) && ! empty($destinations)
+            ? $destinations[0]
+            : null;
+
+        return $this->finalize('sms send', [
+            'ok' => $response->successful() && ! $this->isError($body),
+            'http_status' => $httpStatus,
+            'request_id' => $body['requestId'] ?? null,
+            'destination_responses' => $destinations,
+            'first_message_id' => is_array($firstDestination)
+                ? ($firstDestination['messageId'] ?? null)
+                : null,
+            'first_destination_status' => is_array($firstDestination)
+                ? ($firstDestination['statusCode'] ?? null)
+                : null,
+            'status_code' => $body['statusCode'] ?? null,
+            'status_detail' => $body['statusDetail'] ?? null,
+            'raw' => $body,
+        ], $httpStatus);
+    }
+
     protected function callSubscriptionSend(string $phone, string $action, ?string $gatewaySubscriberId = null): array
     {
         $payload = [
