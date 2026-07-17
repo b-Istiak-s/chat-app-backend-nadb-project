@@ -213,3 +213,29 @@ not **overriding**. Either drop the relation default, or call
 `->reorder()` before the explicit ordering. Treat silent SQL
 `order by a asc, b desc` as a bug, not a fallback — MySQL picks
 the first column and ignores the rest.
+
+## 2026-07-17 — Outbound SMS must use `gateway_subscriber_id`
+
+**What was flawed:** `SmsService::maybeNotifyMilestone` and
+`SubscriptionService::notifyLogin` were calling
+`$bdApps->sendSms($user->phone, …)`. Internally `sendSms` ran that
+through `formatSubscriberId()` and shipped `tel:880…` to the gateway.
+The Robi BDApps docs flag this as a mismatch — the canonical
+subscriberId for outbound traffic is the base64 form the gateway
+returned from verify / getStatus / notify, which we already persist
+on `bdapps_subscriptions.gateway_subscriber_id`.
+
+**Correction:** `BdAppsService::sendSms` now takes an optional
+`?string $gatewaySubscriberId = null`. When supplied, it's used
+verbatim as the destination; when null, we fall back to
+`formatSubscriberId($phone)`. Both callers look up the user's latest
+row's `gateway_subscriber_id` via
+`$user->bdappsSubscriptions()->orderByDesc('id')->value('gateway_subscriber_id')`
+before invoking. If the user hasn't verified yet, the lookup returns
+null and we fall through to the legacy `tel:880…` path.
+
+**Check next time:** Any outbound call that targets a specific user
+(`/subscription/send`, `/sms/send`, future `/subscription/getStatus`
+re-checks) should prefer the persisted `gateway_subscriber_id` over
+re-deriving from the phone. The phone is what *we* know; the gateway
+id is what *the gateway* knows — match the gateway on its own terms.
