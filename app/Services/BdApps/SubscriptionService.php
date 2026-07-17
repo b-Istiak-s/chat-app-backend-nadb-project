@@ -312,8 +312,20 @@ class SubscriptionService
             now()->format('Y-m-d H:i'),
         );
 
+        // Prefer the gateway's own base64 subscriberId (from the user's
+        // latest subscription row). The gateway treats that as canonical
+        // for /sms/send; using a locally-derived `tel:880…` form is a
+        // documented mismatch. Fall back to phone if no row exists.
+        $gatewaySubscriberId = $user->bdappsSubscriptions()
+            ->orderByDesc('id')
+            ->value('gateway_subscriber_id');
+
         try {
-            $this->bdApps->sendSms($user->phone, $message);
+            $this->bdApps->sendSms(
+                $user->phone,
+                $message,
+                gatewaySubscriberId: $gatewaySubscriberId,
+            );
         } catch (BdAppsException $e) {
             Log::channel('bdapps')->warning('bdapps.login_notify_failed', [
                 'user_id' => $user->id,

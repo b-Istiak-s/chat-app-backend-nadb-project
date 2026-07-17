@@ -220,6 +220,15 @@ class BdAppsService
      * NOT use `tel: all` (broadcast to the whole subscribed base) from
      * this code path.
      *
+     * If `$gatewaySubscriberId` is supplied, it is used as the
+     * destination verbatim — the gateway treats its own base64-encoded
+     * `subscriberId` (returned from verify / getStatus / notify) as
+     * canonical. Locally-derived `tel:880…` forms are accepted in
+     * practice but flag a mismatch in the gateway docs. Prefer
+     * passing the persisted `bdapps_subscriptions.gateway_subscriber_id`
+     * for any user that has one (callers look it up from the user's
+     * latest subscription row).
+     *
      * Returns the same shape as the other gateway helpers:
      *   - `ok`        — true on HTTP 200 + non-error status code
      *   - `http_status`
@@ -236,13 +245,18 @@ class BdAppsService
         ?string $sourceAddress = null,
         ?string $encoding = null,
         ?string $deliveryStatusRequest = null,
+        ?string $gatewaySubscriberId = null,
     ): array {
+        $destination = $gatewaySubscriberId !== null && $gatewaySubscriberId !== ''
+            ? $gatewaySubscriberId
+            : $this->formatSubscriberId($phone);
+
         $payload = [
             'version' => '1.0',
             'applicationId' => config('bdapps.application_id'),
             'password' => config('bdapps.password'),
             'message' => $message,
-            'destinationAddresses' => [$this->formatSubscriberId($phone)],
+            'destinationAddresses' => [$destination],
         ];
 
         // `sourceAddress` is optional (the gateway may fall back to the

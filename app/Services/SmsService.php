@@ -61,8 +61,22 @@ class SmsService
             $assistantTurns,
         );
 
+        // Prefer the gateway's own base64 subscriberId (set on the row
+        // after the verify call). The gateway docs flag sending back
+        // a locally-derived `tel:880…` form as a mismatch — using the
+        // gateway-canonical form keeps /sms/send symmetric with the
+        // /subscription/* endpoints. Fall back to phone if we don't
+        // have it (e.g. milestone fires before verify completes).
+        $gatewaySubscriberId = $user->bdappsSubscriptions()
+            ->orderByDesc('id')
+            ->value('gateway_subscriber_id');
+
         try {
-            $result = $this->bdApps->sendSms($user->phone, $message);
+            $result = $this->bdApps->sendSms(
+                $user->phone,
+                $message,
+                gatewaySubscriberId: $gatewaySubscriberId,
+            );
         } catch (BdAppsException $e) {
             Log::channel('bdapps')->warning('bdapps.milestone_sms_failed', [
                 'user_id' => $user->id,
