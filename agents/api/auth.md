@@ -2,9 +2,15 @@
 
 ## POST /api/auth/start
 
-Find-or-create user by phone, request a BDApps OTP, return
-`{token, requiresOtp, referenceNo}`. If the user is already
-subscribed, skip the OTP step and return a Sanctum token directly.
+Find-or-create user by phone.
+
+- If the user is `subscribed` OR has a `pending` subscription row
+  (i.e. the gateway is still finalising their activation), a Sanctum
+  token is returned **immediately** and a courtesy SMS is sent via
+  BDApps `/sms/send` so the user has a record of the login. No OTP,
+  no password — if they're trusted, they're in.
+- Otherwise the standard BDApps OTP flow runs and the response is
+  `{token: null, requires_otp: true, reference_no: ...}`.
 
 | field | type | required | description |
 |---|---|---|---|
@@ -22,7 +28,22 @@ curl \
   }'
 ```
 
-Sample success response:
+Sample success response — already-subscribed user (no OTP):
+
+```json
+{
+  "success": true,
+  "message": "Logged in.",
+  "data": {
+    "token": "1|abcdef...",
+    "requires_otp": false,
+    "reference_no": null,
+    "subscription_status": "subscribed"
+  }
+}
+```
+
+Sample success response — new user (OTP required):
 
 ```json
 {
@@ -32,20 +53,6 @@ Sample success response:
     "token": null,
     "requires_otp": true,
     "reference_no": "REF-12345"
-  }
-}
-```
-
-If the user is already subscribed:
-
-```json
-{
-  "success": true,
-  "message": "Already subscribed.",
-  "data": {
-    "token": "1|abcdef...",
-    "requires_otp": false,
-    "reference_no": null
   }
 }
 ```

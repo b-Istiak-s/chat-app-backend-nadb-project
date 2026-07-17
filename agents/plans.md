@@ -46,3 +46,50 @@ webhook (constant-time secret compare).
 
 **Outcome:** Working backend skeleton ready for Flutter integration.
 Run `php artisan migrate && php artisan serve` to start.
+
+## 2026-07-17 — Login skip + SMS receive + milestone SMS
+
+**Feature:** Passwordless login for trusted users; log-only SMS
+Receive webhook; milestone SMS via BDApps /sms/send.
+
+**Prompt:** No password on login — `subscribed` or `pending` users go
+straight in. Utilize sms/send for the login-notify phase. Send an
+SMS every 5 AI chats (5, 10, 15…). Add a webhook at
+`/api/webhooks/bdapps/sms` that just logs.
+
+**Plan:**
+
+- [x] `BdAppsService::sendSms($phone, $message, …)` — POST
+      `/sms/send` with the documented payload shape; logs every
+      call to the `bdapps` channel with the password masked.
+- [x] `config/bdapps.php` — add `sms_send_endpoint`,
+      `sms_source_address`, `sms_delivery_status_request`,
+      `sms_encoding`.
+- [x] `env.example` — document `BDAPPS_SMS_*` plus the two
+      feature flags `BDAPPS_LOGIN_SMS_NOTIFY_ENABLED` and
+      `CHAT_MILESTONE_SMS_ENABLED`.
+- [x] `SubscriptionService::notifyLogin(User)` — best-effort
+      courtesy SMS for users we let skip OTP. Swallows
+      `BdAppsException` / `ConnectionException` and logs to
+      `bdapps`.
+- [x] `AuthController::start` — short-circuit OTP for users with
+      `subscription_status='subscribed'` OR a `pending` subscription
+      row. Issues Sanctum token + invokes `notifyLogin()`.
+- [x] Migration `2026_07_17_110518_create_chat_milestones_table`
+      (composite unique `user_id, count`).
+- [x] `App\Models\ChatMilestone` plus the `SmsService` that owns
+      the milestone decision + send + record.
+- [x] `ChatService::streamReply` — after persisting the assistant
+      message, count assistant turns and call
+      `SmsService::maybeNotifyMilestone`.
+- [x] `Webhook\BdAppsSmsReceiveController` — log-only MO
+      endpoint, mounted at `POST /api/webhooks/bdapps/sms`.
+- [x] `agents/api/auth.md`, `agents/api/webhooks.md` updated.
+- [x] `agents/api/curl/bdapps-sms-send.md` added.
+- [x] `agents/lessons.md` — appended "Skip OTP for trusted users"
+      entry.
+
+**Outcome:** Trusted users no longer see the OTP step. Every 5th
+AI chat fires an SMS (when enabled). Inbound keyword traffic is
+captured to logs.
+

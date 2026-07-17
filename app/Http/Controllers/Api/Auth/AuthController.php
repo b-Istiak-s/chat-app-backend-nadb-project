@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\Auth;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Api\Auth\StartRequest;
 use App\Http\Requests\Api\Auth\VerifyOtpRequest;
+use App\Models\BdappsSubscription;
 use App\Models\User;
 use App\Services\BdApps\SubscriptionService;
 use Illuminate\Http\JsonResponse;
@@ -13,9 +14,13 @@ use Symfony\Component\HttpFoundation\Response;
 
 /**
  * Single-user-type auth flow:
- *   - start(): find-or-create user by phone, trigger BDApps OTP,
- *     return {token, requiresOtp, referenceNo}. If user is already
- *     subscribed we skip OTP and issue the token directly.
+ *   - start(): find-or-create user by phone.
+ *     * If the user is `subscribed` OR has a `pending` subscription
+ *       row, issue a Sanctum token directly (no OTP, no password)
+ *       and fire a courtesy SMS via BDApps /sms/send so the user
+ *       sees a record of the login.
+ *     * Otherwise trigger the standard BDApps OTP flow and return
+ *       {token: null, requires_otp: true, reference_no: ...}.
  *   - verify(): confirm OTP with BDApps and mark user subscribed.
  *   - me(): return current user phone + subscription status.
  *   - logout(): revoke current Sanctum token.
@@ -36,15 +41,21 @@ class AuthController extends Controller
                 ['subscription_status' => 'unsubscribed'],
             );
 
-            // Already subscribed? Skip the OTP round-trip.
-            if ($user->isSubscribed()) {
+            // Logged-in users (subscribed, OR have a pending row that
+            // the gateway is still finalising) skip OTP entirely. We
+            // still acknowledge the login via /sms/send so they see
+            // a record on their phone.
+            if ($this->userCanSkipOtp($user)) {
                 $token = $user->createToken('mobile')->plainTextToken;
+
+                $this->subscriptionService->notifyLogin($user);
 
                 return $this->sendSuccessResponse([
                     'token' => $token,
                     'requires_otp' => false,
                     'reference_no' => null,
-                ], 'Already subscribed.');
+                    'subscription_status' => $user->subscription_status,
+                ], 'Logged in.');
             }
 
             $result = $this->subscriptionService->startSubscription($user);
@@ -131,5 +142,24 @@ class AuthController extends Controller
         } catch (\Throwable $e) {
             return $this->handleError($e);
         }
+    }
+
+    /**
+     * True when the user can skip the OTP step entirely — i.e. they
+     * have an active or in-flight subscription. "subscribed" is the
+     * steady-state active case; "pending" is a user we optimistically
+     * granted a token to (during an INITIAL CHARGING PENDING window)
+     * whose subscription row is still being reconciled. Either way we
+     * trust them.
+     */
+    private function userCanSkipOtp(User $user): bool
+    {
+        if ($user->isSubscribed()) {
+            return true;
+        }
+
+        return $user->bdappsSubscriptions()
+            ->where('status', BdappsSubscription::STATUS_PENDING)
+            ->exists();
     }
 }

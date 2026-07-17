@@ -287,6 +287,50 @@ class SubscriptionService
     }
 
     /**
+     * Send a courtesy login-notification SMS via BDApps /sms/send.
+     *
+     * Called from the auth flow when an already-trusted user
+     * (subscribed or has a pending row) skips the OTP step. The SMS
+     * is a pure audit/UX courtesy — the login is already complete by
+     * the time we get here, so we deliberately swallow transport /
+     * gateway failures: a missed SMS should never log the user out
+     * or fail the auth response.
+     *
+     * If BDAPPS_LOGIN_SMS_NOTIFY_ENABLED is false (or unset to "0"),
+     * this is a no-op — useful for tests / local dev where we don't
+     * want to spam the gateway.
+     */
+    public function notifyLogin(User $user): void
+    {
+        if (! filter_var(env('BDAPPS_LOGIN_SMS_NOTIFY_ENABLED', false), FILTER_VALIDATE_BOOLEAN)) {
+            return;
+        }
+
+        $message = sprintf(
+            'ChatApp: You just signed in to your ChatApp account on %s. '
+            .'If this was not you, please contact support.',
+            now()->format('Y-m-d H:i'),
+        );
+
+        try {
+            $this->bdApps->sendSms($user->phone, $message);
+        } catch (BdAppsException $e) {
+            Log::channel('bdapps')->warning('bdapps.login_notify_failed', [
+                'user_id' => $user->id,
+                'phone' => $user->phone,
+                'status_code' => $e->statusCode,
+                'status_detail' => $e->statusDetail,
+            ]);
+        } catch (ConnectionException $e) {
+            Log::channel('bdapps')->warning('bdapps.login_notify_failed', [
+                'user_id' => $user->id,
+                'phone' => $user->phone,
+                'transport_error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
      * Handle an incoming notify webhook. The status field is the
      * source of truth — we mirror it onto both the user and the
      * latest subscription row. Idempotent.

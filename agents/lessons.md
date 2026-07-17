@@ -134,3 +134,37 @@ present and fall back to the `tel:880…` form derived from the phone.
 response body, persist it as-is. Don't try to parse base64 or
 re-derive it from the phone — the gateway is the source of truth for
 its own identifier.
+
+## 2026-07-17 — Skip OTP for trusted users, log-only SMS Receive webhook
+
+**What was flawed:** `/auth/start` only short-circuited OTP for
+`isSubscribed()` users. Subscribers whose subscription row was still
+`pending` (waiting on Robi's `INITIAL CHARGING PENDING` to flip)
+were forced to re-verify via SMS OTP even though we already trusted
+them with a Sanctum token on `/verify`. Worse, the `99898` keyword
+on short code `21213` had no inbound webhook — any MO traffic was
+silently dropped.
+
+**Correction:**
+
+- `AuthController::start` now treats *both* `subscribed` and
+  `pending` as trustworthy and issues a Sanctum token directly. A
+  new `SubscriptionService::notifyLogin` fires a courtesy SMS via
+  `BdAppsService::sendSms` (POST `/sms/send`) so the user has a
+  paper trail. The send is best-effort: a transport / gateway
+  failure is logged to `bdapps` and swallowed — a missed SMS
+  should never log the user out or fail the auth response.
+- New `POST /api/webhooks/bdapps/sms` endpoint
+  (`BdAppsSmsReceiveController`) accepts the MO payload and writes
+  it to the `bdapps` log channel before acknowledging `S1000`.
+  Log-only for now; the controller is the future home for any
+  keyword-based automation (STOP / BAL / HELP).
+- Milestone SMS at every 5 AI chats is wired through `SmsService`
+  and gated by `CHAT_MILESTONE_SMS_ENABLED`. Idempotency comes
+  from a unique index on `chat_milestones(user_id, count)` — a
+  duplicate insert is treated as "already notified, skip".
+
+**Check next time:** Any "is this user trusted?" branch should
+consult both `subscription_status` and the local `pending` row, not
+just one of them. SMS-inbound endpoints should always exist before
+shipping an SMS-outbound feature, otherwise traffic disappears.
