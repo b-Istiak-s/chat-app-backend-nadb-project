@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\Auth\AuthController;
 use App\Http\Controllers\Api\Chat\ChatController;
 use App\Http\Controllers\Webhook\BdAppsNotifyController;
+use App\Http\Controllers\Webhook\BdAppsSmsReceiveController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -24,8 +25,9 @@ Route::prefix('auth')->group(function () {
     Route::post('/verify', [AuthController::class, 'verify']);
 });
 
-// BDApps webhook (uses shared notify_secret, not Sanctum).
+// BDApps webhooks (no Sanctum; auth via shared secrets / public endpoint).
 Route::post('/webhooks/bdapps/notify', [BdAppsNotifyController::class, 'handle']);
+Route::post('/webhooks/bdapps/sms', [BdAppsSmsReceiveController::class, 'handle']);
 
 // Protected routes.
 Route::middleware('auth:sanctum')->group(function () {

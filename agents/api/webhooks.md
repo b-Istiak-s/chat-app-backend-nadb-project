@@ -61,6 +61,57 @@ If the applicationId doesn't match, or the notify_secret is wrong:
 }
 ```
 
+---
+
+## POST /api/webhooks/bdapps/sms
+
+Receives Mobile-Originated SMS that an end user sent to the keyword
+`99898` (short code `21213`). Log-only — no DB write, no automatic
+reply, no phone → user lookup. The full payload is written to the
+`bdapps` log channel for forensics and the gateway is acknowledged
+with `S1000` so it stops retrying.
+
+Body fields (per BDApps SMS Receive docs):
+
+| field | type | required | description |
+|---|---|---|---|
+| version | string | yes | API version, e.g. `1.0` |
+| applicationId | string | yes | Must match `config('bdapps.application_id')` |
+| sourceAddress | string | yes | Sender `tel:880XXXXXXXXXX` |
+| message | string | yes | User's text |
+| requestId | string | yes | Gateway request id |
+| encoding | string | yes | `0` \| `240` \| `245` |
+
+###### POST /api/webhooks/bdapps/sms
+
+```curl
+curl \
+  -X POST \
+  "$APP_URL/api/webhooks/bdapps/sms" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "version": "1.0",
+    "applicationId": "APP_137539",
+    "sourceAddress": "tel:8801812345678",
+    "message": "HELP",
+    "requestId": "REQ-98765",
+    "encoding": "0"
+  }'
+```
+
+Sample success response:
+
+```json
+{
+  "statusCode": "S1000",
+  "statusDetail": "Request was successfully processed"
+}
+```
+
+If we ever want to react to MO keywords (STOP, BAL, HELP), this is
+the controller to extend. Keep the body thin.
+
+
 ## Logging
 
 Every inbound webhook is logged to the dedicated `bdapps` channel
