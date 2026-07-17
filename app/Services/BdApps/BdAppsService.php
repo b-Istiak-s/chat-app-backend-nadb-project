@@ -25,7 +25,36 @@ use Illuminate\Support\Facades\Log;
  */
 class BdAppsService
 {
+    /**
+     * Gateway `subscriptionStatus` values that mean "still charging —
+     * not yet REGISTERED". When the gateway returns one of these the
+     * subscription is in flight; we treat it as a soft success on
+     * /otp/verify (token issued) but persist status='pending' on the
+     * local row so a reconciler can poll /getStatus later.
+     */
+    public const PENDING_STATUSES = [
+        'INITIAL CHARGING PENDING',
+        'CHARGE_PENDING',
+        'PENDING',
+    ];
+
     public function __construct() {}
+
+    /**
+     * True when a gateway subscriptionStatus value indicates the
+     * subscription is still being processed (i.e. not yet REGISTERED
+     * and not yet failed). Match is case-insensitive.
+     */
+    public function isPendingStatus(?string $status): bool
+    {
+        if ($status === null) {
+            return false;
+        }
+
+        $upper = strtoupper(trim($status));
+
+        return in_array($upper, self::PENDING_STATUSES, true);
+    }
 
     /**
      * `POST /subscription/otp/request` — BDApps generates a one-time code
@@ -103,6 +132,7 @@ class BdAppsService
             'ok' => $response->successful() && ! $this->isError($body),
             'http_status' => $httpStatus,
             'subscription_status' => $body['subscriptionStatus'] ?? null,
+            'gateway_subscriber_id' => $body['subscriberId'] ?? null,
             'status_code' => $body['statusCode'] ?? null,
             'status_detail' => $body['statusDetail'] ?? null,
             'raw' => $body,
@@ -113,13 +143,18 @@ class BdAppsService
      * `POST /subscription/getStatus` — used to reconcile local state
      * with whatever BDApps currently thinks (e.g. user replied STOP to
      * the welcome SMS since we last heard from them).
+     *
+     * Pass the gateway-canonical base64 `subscriberId` via the second
+     * argument when we have one (persisted on the subscription row as
+     * `gateway_subscriber_id`). Falls back to the normalised
+     * `tel:880…` form derived from `$phone` otherwise.
      */
-    public function getStatus(string $phone): array
+    public function getStatus(string $phone, ?string $gatewaySubscriberId = null): array
     {
         $payload = [
             'applicationId' => config('bdapps.application_id'),
             'password' => config('bdapps.password'),
-            'subscriberId' => $this->formatSubscriberId($phone),
+            'subscriberId' => $gatewaySubscriberId ?? $this->formatSubscriberId($phone),
         ];
 
         $response = $this->http()
@@ -143,6 +178,7 @@ class BdAppsService
             'ok' => $response->successful(),
             'http_status' => $httpStatus,
             'subscription_status' => $body['subscriptionStatus'] ?? null,
+            'gateway_subscriber_id' => $body['subscriberId'] ?? null,
             'status_code' => $body['statusCode'] ?? null,
             'status_detail' => $body['statusDetail'] ?? null,
             'raw' => $body,
@@ -153,10 +189,15 @@ class BdAppsService
      * `POST /subscription/send` with action='0' — cancel the user's
      * subscription. Idempotent at the gateway level; a repeat call
      * returns UNREGISTERED again.
+     *
+     * Pass the gateway-canonical base64 `subscriberId` via the second
+     * argument when we have it (persisted on the subscription row as
+     * `gateway_subscriber_id`). Falls back to the normalised
+     * `tel:880…` form derived from `$phone` otherwise.
      */
-    public function unsubscribe(string $phone): array
+    public function unsubscribe(string $phone, ?string $gatewaySubscriberId = null): array
     {
-        return $this->callSubscriptionSend($phone, '0');
+        return $this->callSubscriptionSend($phone, '0', $gatewaySubscriberId);
     }
 
     /**
@@ -164,18 +205,18 @@ class BdAppsService
      * Normally the OTP flow handles subscription activation, but this
      * is useful for re-subscribing a previously cancelled user.
      */
-    public function subscribe(string $phone): array
+    public function subscribe(string $phone, ?string $gatewaySubscriberId = null): array
     {
-        return $this->callSubscriptionSend($phone, '1');
+        return $this->callSubscriptionSend($phone, '1', $gatewaySubscriberId);
     }
 
-    protected function callSubscriptionSend(string $phone, string $action): array
+    protected function callSubscriptionSend(string $phone, string $action, ?string $gatewaySubscriberId = null): array
     {
         $payload = [
             'version' => '1.0',
             'applicationId' => config('bdapps.application_id'),
             'password' => config('bdapps.password'),
-            'subscriberId' => $this->formatSubscriberId($phone),
+            'subscriberId' => $gatewaySubscriberId ?? $this->formatSubscriberId($phone),
             'action' => $action,
         ];
 
@@ -197,6 +238,7 @@ class BdAppsService
             'ok' => $response->successful() && ! $this->isError($body),
             'http_status' => $httpStatus,
             'subscription_status' => $body['subscriptionStatus'] ?? null,
+            'gateway_subscriber_id' => $body['subscriberId'] ?? null,
             'status_code' => $body['statusCode'] ?? null,
             'status_detail' => $body['statusDetail'] ?? null,
             'raw' => $body,
@@ -277,6 +319,7 @@ class BdAppsService
             if (str_starts_with($rest, '0')) {
                 return $rest;
             }
+
             return '0'.$rest;
         }
 

@@ -20,6 +20,7 @@ class BdappsSubscription extends Model
         'user_id',
         'phone',
         'subscriber_id',
+        'gateway_subscriber_id',
         'status',
         'bdapps_subscription_status',
         'reference_no',
