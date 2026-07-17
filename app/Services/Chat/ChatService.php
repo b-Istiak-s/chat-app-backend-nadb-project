@@ -42,12 +42,16 @@ TEXT;
     {
         $conversation = $this->getOrCreateConversation($user);
 
+        // `ChatConversation::messages()` already has `orderBy('id')` on
+        // the relation. If we just chain `->orderByDesc('id')` on top,
+        // Eloquent emits BOTH order-by clauses and MySQL sorts by the
+        // FIRST one (asc). `reorder()` drops the inherited ordering
+        // so our `desc` is the only sort key.
         return $conversation->messages()
-            ->orderByDesc('id')
+            ->reorder()
+            ->orderBy('id')
             ->limit($limit)
             ->get()
-            ->reverse()
-            ->values()
             ->map(fn (ChatMessage $m) => [
                 'id' => $m->id,
                 'role' => $m->role,

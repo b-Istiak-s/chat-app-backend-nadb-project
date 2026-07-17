@@ -168,3 +168,48 @@ silently dropped.
 consult both `subscription_status` and the local `pending` row, not
 just one of them. SMS-inbound endpoints should always exist before
 shipping an SMS-outbound feature, otherwise traffic disappears.
+
+## 2026-07-17 — `orderBy` collisions on HasMany relations
+
+**What was flawed:** `ChatService::getHistory` was supposed to return
+the user's chat history in **ascending** chronological order (oldest
+first), but was actually returning **descending** (newest first).
+The Flutter app then did `.reversed.toList()` on the result to "fix"
+it for `flutter_chat_ui`, which inverts the bug in the opposite
+direction: history rendered in the wrong scroll position, so the
+auto-scroll controller scrolled past the messages and they looked
+absent from the UI.
+
+**Root cause:** `ChatConversation::messages()` declared
+`->orderBy('id')` on the relation. Calling
+`$conversation->messages()->orderByDesc('id')->limit(50)->get()`
+on top didn't override the inherited order — Eloquent emitted
+both clauses:
+
+```
+order by `id` asc, `id` desc limit 50
+```
+
+MySQL sorts by the **first** `ORDER BY` column, so the result was
+ascending regardless of the trailing `desc`. The `->reverse()`
+applied afterward flipped it back to descending. Net result:
+backend returned newest-first, contradicting the docstring.
+
+**Correction:** `ChatService::getHistory` now calls `->reorder()`
+before the explicit `->orderBy('id')` so the inherited ordering
+is dropped and only the intended `asc` survives. Verified with
+a tinker round-trip: IDs come back `[3,4,5,6,7,8,9,10]` exactly.
+
+The Flutter side dropped its `.reversed.toList()` in
+`ChatPage._projectState` — it now passes the messages through in
+the order the backend sends them, and the matching comment in
+`ChatRemoteDataSource.getHistory` was expanded to explain why
+"oldest first" is exactly what `flutter_chat_ui`'s
+`reverse: true` scrollview expects.
+
+**Check next time:** Any time a relation defines a default
+`->orderBy(...)`, treat `->orderBy*(...)` chains as **additive**
+not **overriding**. Either drop the relation default, or call
+`->reorder()` before the explicit ordering. Treat silent SQL
+`order by a asc, b desc` as a bug, not a fallback — MySQL picks
+the first column and ignores the rest.
