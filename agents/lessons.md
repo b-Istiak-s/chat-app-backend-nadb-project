@@ -48,6 +48,36 @@ header (or `notify_secret` body field as fallback).
 different surfaces (gateway auth vs webhook auth). Each surface should
 have its own rotating secret.
 
+## 2026-07-18 — Webhook fields should match the gateway, not a spec doc
+
+**What was flawed:** The webhook controller was looking for fields
+(`X-Bdapps-Secret` header, `notify_secret` body field) that the
+gateway doesn't actually send. The original mistake was reading the
+official BDApps API doc for `POST /subscription/notify`, which
+implies a wider set of expected fields (`version`, `password`, plus
+the shared-secret headers), and extrapolating that the webhook
+receiver needed to validate them.
+
+**Correction:** Cross-checked against the quiz_app PHP listener at
+`projects/nadb/quiz_app/bdapps_api_php/subscription_listener.php`,
+which is the operational ground truth — the gateway only sends five
+fields (`timeStamp`, `status`, `applicationId`, `subscriberId`,
+`frequency`) and the listener doesn't authenticate. Aligned the
+Laravel controller to that surface: dropped the
+`X-Bdapps-Secret` / `notify_secret` validation entirely (relying on
+network-level ACLs for receiver auth), kept the applicationId sanity
+check as a misroute guard, and kept every existing log entry —
+including the unconditional `bdapps.notify_received` on every call
+(Laravel's equivalent of the PHP listener's
+`fwrite($myfile, $date_."\n")`).
+
+**Check next time:** When a controller's input shape differs from
+an established reference implementation, the reference wins. The
+gateway's behaviour is the source of truth; the API doc describes
+the intended shape, but a working reference shows what actually
+gets sent. Never add header / field expectations without seeing
+them in the reference or a real capture.
+
 ## 2026-07-16 — Dedicated exception type for gateway errors
 
 **What was flawed:** Catching `\Throwable $e` and reading

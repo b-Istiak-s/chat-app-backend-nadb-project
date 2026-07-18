@@ -8,12 +8,15 @@ via STOP reply), or when a daily charge fails.
 
 Authentication:
 
-- `applicationId` in body must equal `config('bdapps.application_id')`.
-- If `config('bdapps.notify_secret')` is non-empty, the call must
-  present the same value in `X-Bdapps-Secret` header (or
-  `notify_secret` body field). Compared with `hash_equals`.
+The gateway posts to a configured URL and trusts the receiver — the
+quiz_app PHP reference (`projects/nadb/quiz_app/bdapps_api_php/
+subscription_listener.php`) does no auth at all. We mirror that
+posture: the only guard is an `applicationId` sanity check so a
+misrouted POST from a different app doesn't get applied to our
+users. The webhook endpoint is intended to live behind a firewall
+or a network-level ACL rather than bearer / shared-secret auth.
 
-Body fields:
+Body fields (matches the PHP listener's parse list):
 
 | field | type | required | description |
 |---|---|---|---|
@@ -33,7 +36,6 @@ curl \
   -X POST \
   "$APP_URL/api/webhooks/bdapps/notify" \
   -H "Content-Type: application/json" \
-  -H "X-Bdapps-Secret: $BDAPPS_NOTIFY_SECRET" \
   -d '{
     "applicationId": "APP_137539",
     "subscriberId": "tel:8801812345678",
@@ -52,7 +54,7 @@ Sample success response:
 }
 ```
 
-If the applicationId doesn't match, or the notify_secret is wrong:
+If the applicationId doesn't match:
 
 ```json
 {
@@ -118,9 +120,11 @@ Every inbound webhook is logged to the dedicated `bdapps` channel
 (`storage/logs/bdapps-YYYY-MM-DD.log`, JSON formatter):
 
 - `bdapps.notify_received` — first entry, includes the full body
-  + headers + IP, so even auth failures leave a forensic trail
-- `bdapps.notify_app_id_mismatch` / `bdapps.notify_secret_mismatch` —
-  auth rejections (also returns 401 to the gateway)
+  + headers + IP, so even auth failures leave a forensic trail.
+  This is the "route called" log — it fires unconditionally on every
+  invocation, mirroring the PHP listener's FSubNoti.txt write.
+- `bdapps.notify_app_id_mismatch` — auth rejection (also returns 401
+  to the gateway)
 - `bdapps.notify_missing_fields` / `bdapps.notify_invalid_subscriber_id`
   — bad payload rejections
 - `bdapps.notify_unknown_phone` — phone not in our DB (acknowledge S1000

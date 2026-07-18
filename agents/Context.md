@@ -27,8 +27,11 @@ to phone-only subscription login.
 - `App\Models\BdappsSubscription` — local mirror of the gateway state.
 - `App\Repositories\BdappsSubscriptionRepository` — data access.
 - `App\Http\Controllers\Webhook\BdAppsNotifyController` — receives
-  `POST /api/webhooks/bdapps/notify`, validates shared notify_secret
-  via constant-time compare, applies status changes to user + subscription.
+  `POST /api/webhooks/bdapps/notify`. Aligns with the quiz_app PHP
+  listener's 5-field set (`timeStamp`, `status`, `applicationId`,
+  `subscriberId`, `frequency`); the only auth is an applicationId
+  sanity check (the PHP reference does no auth at all). Applies
+  status changes to user + subscription.
 
 ### Endpoints
 
@@ -45,7 +48,7 @@ to phone-only subscription login.
 - `POST /api/chat/messages`  — SSE stream of AI reply (`Content-Type: text/event-stream`)
 - `GET  /api/chat/messages`  — paginated JSON history
 
-**Webhook (public, shared notify_secret):**
+**Webhook (public, applicationId sanity check):**
 - `POST /api/webhooks/bdapps/notify`
 
 ### AI Chat

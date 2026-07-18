@@ -14,22 +14,38 @@ use Symfony\Component\HttpFoundation\Response;
 /**
  * Handles `POST /api/webhooks/bdapps/notify`.
  *
- * Authentication: BDApps pushes JSON body containing
+ * Body shape — the operational ground truth is the quiz_app PHP
+ * listener at
+ *   projects/nadb/quiz_app/bdapps_api_php/subscription_listener.php
+ * which parses these five fields off the raw body:
  *   { timeStamp, status, applicationId, subscriberId, frequency }
  *
- * We authenticate by checking:
- *   - applicationId matches our config('bdapps.application_id')
- *   - the request body signature or shared secret matches
+ * The BDApps official spec
+ * (https://developer.bdapps.com/subscription/notify) lists a wider
+ * set of "required" fields — `version`, `password`, plus the five
+ * above — but in practice the gateway does not send `version` or
+ * `password` to webhook subscribers, and the PHP reference ignores
+ * them. We treat the PHP listener as canonical: only the five fields
+ * it reads are required for downstream processing, and any extra
+ * fields the gateway may add in the future are still captured in
+ * `bdapps.notify_received.payload` for forensic visibility.
  *
- * For this implementation we use a shared notify_secret (passed in
- * header `X-BdApps-Secret`) plus a constant-time compare against
- * config('bdapps.notify_secret'). If notify_secret is empty we fall
- * back to verifying applicationId + a password check (mirroring the
- * pattern from BDApps quiz_app PHP listener).
+ * Authentication: the gateway posts to a configured URL and trusts
+ * the receiver. The PHP listener does no auth at all — it just
+ * appends the payload to a log file. We mirror that posture here:
+ * the only guard is an applicationId sanity check (so a misrouted
+ * POST from a different app doesn't get applied to our users). There
+ * is no shared-secret / signature layer; the webhook endpoint is
+ * intended to live behind a firewall or a network-level ACL rather
+ * than bearer auth.
  *
  * Every entry this controller writes goes to the dedicated `bdapps`
  * log channel so the inbound webhook conversation is correlated with
- * the outbound entries BdAppsService writes.
+ * the outbound entries BdAppsService writes. The first entry —
+ * `bdapps.notify_received` — fires unconditionally on every call so
+ * we always have a forensic trail even when downstream checks reject
+ * the payload. It is the Laravel equivalent of the PHP listener's
+ * unconditional `fwrite($myfile, $date_."\n")` on every call.
  */
 class BdAppsNotifyController extends Controller
 {
@@ -41,17 +57,13 @@ class BdAppsNotifyController extends Controller
     public function handle(Request $request): JsonResponse
     {
         $expectedAppId = (string) config('bdapps.application_id');
-        $expectedSecret = (string) config('bdapps.notify_secret');
         $providedAppId = (string) $request->input('applicationId', '');
-        $providedSecret = (string) ($request->header('X-Bdapps-Secret')
-            ?? $request->input('notify_secret', ''));
 
         // Always log the full inbound payload first so even auth
         // failures leave a forensic trail in the bdapps channel.
         Log::channel('bdapps')->info('bdapps.notify_received', [
             'ip' => $request->ip(),
             'headers' => [
-                'x-bdapps-secret' => $request->header('X-Bdapps-Secret'),
                 'content_type' => $request->header('Content-Type'),
             ],
             'payload' => $request->all(),
@@ -70,18 +82,6 @@ class BdAppsNotifyController extends Controller
         if ($providedAppId !== $expectedAppId) {
             Log::channel('bdapps')->warning('bdapps.notify_app_id_mismatch', [
                 'provided' => $providedAppId,
-                'ip' => $request->ip(),
-            ]);
-
-            return response()->json([
-                'statusCode' => 'E1001',
-                'statusDetail' => 'Unauthorized.',
-            ], Response::HTTP_UNAUTHORIZED);
-        }
-
-        // If a notify_secret is configured, the call must present it.
-        if ($expectedSecret !== '' && ! hash_equals($expectedSecret, $providedSecret)) {
-            Log::channel('bdapps')->warning('bdapps.notify_secret_mismatch', [
                 'ip' => $request->ip(),
             ]);
 
