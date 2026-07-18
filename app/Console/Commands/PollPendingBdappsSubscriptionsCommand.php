@@ -43,11 +43,6 @@ class PollPendingBdappsSubscriptionsCommand extends Command
 
         $rows = $repo->pendingForPolling($cutoff);
 
-        Log::channel('bdapps')->info('bdapps.poll_pending_scanned', [
-            'cutoff' => $cutoff->toIso8601String(),
-            'count' => $rows->count(),
-        ]);
-
         $polled = 0;
         $changed = 0;
         $unchanged = 0;
