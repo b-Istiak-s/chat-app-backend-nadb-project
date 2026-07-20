@@ -210,16 +210,17 @@ class SubscriptionService
     }
 
     /**
-     * Verify the OTP at BDApps and, on success, mark the user as
-     * subscribed. The gateway flips subscriptionStatus to REGISTERED on
-     * success — we mirror that locally. Wrong/invalid OTPs come back
-     * as a gateway error and are logged to the bdapps channel.
+     * Verify the OTP at BDApps and reflect the gateway's verdict
+     * locally. Strict activation: the user only flips to `subscribed`
+     * when the gateway confirms `REGISTERED`. If the gateway returns a
+     * "still charging" status (e.g. `INITIAL CHARGING PENDING`), the
+     * row stays at `status='pending'` and the user stays at
+     * `unsubscribed` — they cannot log in until the 10-second
+     * `PollSubscriptionStatusJob` (or the cron safety net) confirms
+     * REGISTERED.
      *
-     * If the gateway returns one of the "still charging" statuses
-     * (e.g. `INITIAL CHARGING PENDING`) the user is optimistically
-     * marked subscribed (so the auth flow can return a Sanctum token)
-     * but the subscription row stays at `status='pending'` so the
-     * `bdapps:poll-pending` cron can reconcile later.
+     * Wrong/invalid OTPs come back as a gateway error and are logged
+     * to the bdapps channel.
      *
      * The gateway's base64 `subscriberId` from the response is
      * persisted as `gateway_subscriber_id` on the row, so future
@@ -254,21 +255,34 @@ class SubscriptionService
         $isRegistered = $gatewayStatus === 'REGISTERED';
         $isPending = $this->bdApps->isPendingStatus($gatewayStatus);
 
-        // Optimistic activation: user gets a token regardless. The
-        // local subscription row carries the more truthful state.
-        $user->forceFill([
-            'subscription_status' => 'subscribed',
-            'subscribed_at' => now(),
-            'phone_verified_at' => now(),
-        ])->save();
+        // Mirror the gateway's verdict on the user record. The
+        // previous optimistic-flip behaviour (marking the user
+        // subscribed even when the gateway said pending) is gone —
+        // see agents/lessons.md for the rationale.
+        if ($isRegistered) {
+            $user->forceFill([
+                'subscription_status' => 'subscribed',
+                'subscribed_at' => now(),
+                'phone_verified_at' => now(),
+            ])->save();
+        } else {
+            $user->forceFill([
+                'phone_verified_at' => now(),
+            ])->save();
+        }
 
         $subscription = $this->subscriptions->latestForUser($user->id);
         if ($subscription) {
             $this->subscriptions->update($subscription->id, [
-                // REGISTERED → fully active. Anything else → if it's a
-                // known "still charging" status, keep pending so the
-                // cron can flip later; otherwise default to registered
-                // (defensive — gateway already accepted the verify).
+                // REGISTERED → fully active. A known pending status
+                // keeps the row at `pending` so the post-verify job
+                // and the cron can reconcile later. Anything else
+                // (UNREGISTERED, unexpected values, transport-style
+                // success without a status field) defaults to
+                // `registered` — the gateway accepted the verify, and
+                // the row staying pending forever would only happen if
+                // we invented a brand-new failure mode that the
+                // gateway hasn't told us about.
                 'status' => $isRegistered
                     ? BdappsSubscription::STATUS_REGISTERED
                     : ($isPending
@@ -284,6 +298,59 @@ class SubscriptionService
         }
 
         return $result;
+    }
+
+    /**
+     * Finalize a user's subscription state by polling the gateway
+     * once and applying the result via `applyNotifyStatus()`.
+     *
+     * Called by the 10-second delayed `PollSubscriptionStatusJob`
+     * after a successful OTP verify, and by the dashboard's
+     * "Refresh status now" action. Returns the resolved subscription
+     * row.
+     *
+     * If the row is no longer pending (e.g. the cron got there first)
+     * the call is a no-op for the gateway but still records the
+     * latest status on the row.
+     */
+    public function finalizeActivation(User $user): ?BdappsSubscription
+    {
+        $subscription = $this->subscriptions->latestForUser($user->id);
+        if (! $subscription) {
+            return null;
+        }
+
+        $gatewaySubscriberId = $subscription->gateway_subscriber_id
+            ?: $subscription->subscriber_id;
+
+        try {
+            $result = $this->bdApps->getStatus($user->phone, $gatewaySubscriberId);
+        } catch (BdAppsException|ConnectionException $e) {
+            Log::channel('bdapps')->warning('bdapps.finalize_activation_failed', [
+                'user_id' => $user->id,
+                'phone' => $user->phone,
+                'status_code' => $e instanceof BdAppsException ? $e->statusCode : null,
+                'error' => $e->getMessage(),
+            ]);
+
+            return $subscription;
+        }
+
+        $status = strtoupper((string) ($result['subscription_status'] ?? ''));
+        if ($status === '') {
+            return $subscription;
+        }
+
+        if (! empty($result['gateway_subscriber_id'])) {
+            $this->subscriptions->update($subscription->id, [
+                'gateway_subscriber_id' => $result['gateway_subscriber_id'],
+            ]);
+        }
+
+        $this->applyNotifyStatus($user, $status);
+        $subscription->refresh();
+
+        return $subscription;
     }
 
     /**

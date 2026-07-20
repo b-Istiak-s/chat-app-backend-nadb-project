@@ -5,7 +5,6 @@ namespace App\Http\Controllers\Api\Auth;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Api\Auth\StartRequest;
 use App\Http\Requests\Api\Auth\VerifyOtpRequest;
-use App\Models\BdappsSubscription;
 use App\Models\User;
 use App\Services\BdApps\SubscriptionService;
 use Illuminate\Http\JsonResponse;
@@ -91,11 +90,24 @@ class AuthController extends Controller
                 );
             }
 
+            // Strict activation: only REGISTERED grants a Sanctum
+            // token. A still-pending gateway response returns 202
+            // with no token — the mobile client should poll
+            // /api/auth/me until `subscribed` flips.
+            $subscriptionStatus = strtoupper((string) ($result['subscription_status'] ?? ''));
+            if ($subscriptionStatus !== 'REGISTERED') {
+                return $this->sendSuccessResponse([
+                    'token' => null,
+                    'subscription_status' => $subscriptionStatus,
+                    'requires_activation' => true,
+                ], 'Subscription accepted by the gateway; still activating.', Response::HTTP_ACCEPTED);
+            }
+
             $token = $user->createToken('mobile')->plainTextToken;
 
             return $this->sendSuccessResponse([
                 'token' => $token,
-                'subscription_status' => $result['subscription_status'] ?? 'REGISTERED',
+                'subscription_status' => 'REGISTERED',
             ], 'Phone verified successfully.');
         } catch (\Throwable $e) {
             return $this->handleError($e);
@@ -145,21 +157,13 @@ class AuthController extends Controller
     }
 
     /**
-     * True when the user can skip the OTP step entirely — i.e. they
-     * have an active or in-flight subscription. "subscribed" is the
-     * steady-state active case; "pending" is a user we optimistically
-     * granted a token to (during an INITIAL CHARGING PENDING window)
-     * whose subscription row is still being reconciled. Either way we
-     * trust them.
+     * True when the user can skip the OTP step entirely. Login is
+     * strictly gated on `users.subscription_status === 'subscribed'`
+     * — pending rows no longer grant a session because the gateway
+     * hasn't confirmed payment yet.
      */
     private function userCanSkipOtp(User $user): bool
     {
-        if ($user->isSubscribed()) {
-            return true;
-        }
-
-        return $user->bdappsSubscriptions()
-            ->where('status', BdappsSubscription::STATUS_PENDING)
-            ->exists();
+        return $user->isSubscribed();
     }
 }
