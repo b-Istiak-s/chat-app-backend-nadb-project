@@ -39,15 +39,29 @@ class BdappsSubscriptionRepository
     }
 
     /**
-     * Pending subscription rows whose `started_at` is at or before
-     * `$olderThan`. Used by the reconciliation cronjob to find rows
-     * that have been waiting long enough to be worth polling.
+     * Pending subscription rows older than `$olderThan`. Used by the
+     * reconciliation cronjob to find rows that are still awaiting a
+     * gateway verdict.
      *
      * Only rows with `status='pending'` are returned — registered and
      * unregistered rows are skipped (the cron should be a no-op for
-     * them). The age cutoff is now active; the per-user
-     * PollSubscriptionStatusJob is the faster path, so a 1-minute
-     * minimum is comfortable headroom for it to win the race.
+     * them).
+     *
+     * Why an age filter at all? The per-user
+     * `PollSubscriptionStatusJob` is the primary reconciliation path
+     * and runs ~10 seconds after the OTP verifies. The cron's job is
+     * the safety net — pick up anything the worker missed (worker
+     * down at the moment the job was scheduled). A 1-minute minimum
+     * gives the per-user job comfortable headroom to win the race;
+     * it deliberately doesn't poll brand-new rows that the worker
+     * is about to handle.
+     *
+     * Important: this is `started_at <= $olderThan`, not `==`. A
+     * row created at 11:59:59 will satisfy this predicate at every
+     * cron tick after 12:00:59 — it will be re-polled indefinitely
+     * until the gateway flips it to a terminal state (REGISTERED or
+     * UNREGISTERED). The condition is monotonic over time, not a
+     * once-only window.
      */
     public function pendingForPolling(DateTimeInterface $olderThan): Collection
     {

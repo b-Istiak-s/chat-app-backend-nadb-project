@@ -301,3 +301,137 @@ either move the value to `config/*.php` (preferred) or, if a
 runtime-only override is genuinely needed, push the lookup to a
 service provider that runs during bootstrap. Treat "config didn't
 take effect in production" as a default symptom of this mistake.
+
+## 2026-07-20 — Web session vs Sanctum token: two independent auth surfaces
+
+**What was flawed:** First instinct when adding the web dashboard
+was to extend the existing `Api\Auth\AuthController` and have the
+web flow use Sanctum tokens too. That conflates two different
+audiences: the Flutter app talks to the API with bearer tokens; a
+browser session talks to web routes with a cookie. Forcing both
+through Sanctum would (a) try to stash a plaintext bearer token in a
+cookie, (b) make `/dashboard` callers' auth state depend on the
+mobile client's token store, and (c) make logout on the web
+unnecessarily invalidate mobile sessions.
+
+**Correction:** Added a parallel `Web\WebAuthController` (and a
+parallel `Web\DashboardController`) that uses Laravel's default `web`
+guard. Same `User` model, same `SubscriptionService` — only the
+auth surface differs. The browser uses `Auth::guard('web')` /
+`Auth::login($user)` / `Auth::logout()`; the Flutter app uses
+`$user->createToken('mobile')`. The OTP submission path is reused as
+two thin web controllers that delegate to `SubscriptionService` —
+business logic stays in the service layer, controllers only shape
+requests.
+
+**Check next time:** Any time you add a "dashboard / settings /
+portal" surface that humans open in a browser, do NOT route it
+through Sanctum. The cookie session and the Sanctum bearer token
+are independent — pick the right one for each surface, and keep the
+service layer the only place where login is interpreted into a
+user state.
+
+## 2026-07-20 — Gated downloads: don't put paid assets in `public/`
+
+**What was flawed:** The original landing page pointed at
+`public/downloads/app-debug.apk` (~84 MB) as a static asset. That
+is the same as publishing the APK to anyone who can reach the
+domain — `public/` is the only directory exposed to the web. There
+was no subscription gate on the download at all (the previous
+landing CTA had no auth check).
+
+**Correction:** Moved the artefact to
+`storage/app/public/downloads/app-debug.apk`. Now the only path that
+returns the file is the new `Web\DashboardController::downloadApk`
+route, which aborts 403 unless `$user->isSubscribed()` is true.
+The route also 404s if the file is missing, which keeps the disk
+location opaque to clients. A `downloads/apk` Blade-side link
+cannot be deep-linked without an active subscription session — the
+landing page was also rewritten to send users through `/login` →
+`/dashboard` first instead of linking the raw APK.
+
+**Check next time:** Before adding any downloadable file (APK, PDF,
+video, dataset) under `public/`, ask: "should this require auth?"
+If the answer is anything other than "absolutely public, no
+metadata worth hiding, no rate limit needed", put the file under
+`storage/app/` and route every read through a controller that can
+gate, log, and throttle. Anything under `public/` is, by
+definition, public.
+
+## 2026-07-20 — "Pending" must not grant access; only "registered" may
+
+**What was flawed:** `SubscriptionService::verifyOtp()` was
+optimistically flipping `users.subscription_status = 'subscribed'`
+regardless of the gateway's verdict. When the gateway answered
+`INITIAL CHARGING PENDING` (meaning: charged but not yet registered),
+the user was already `subscribed` and `User::isSubscribed()` returned
+true. Combined with the `userCanSkipOtp()` branch that let any user
+with a pending subscription row log in, this meant a freshly-charged
+but unregistered subscriber could mint a Sanctum token (or open a web
+session) — including downloading the APK from the new dashboard — *as
+if* they had paid.
+
+The bug only mattered because the user wanted "only paid users can
+log in". Most apps don't care about the brief window between "we've
+charged the card" and "the gateway has confirmed". ChatApp does,
+because the APK is gated on this state.
+
+**Correction:** Removed the optimistic flip. Now:
+
+- `verifyOtp` only sets `users.subscription_status = 'subscribed'`
+  when the gateway confirms `REGISTERED`.
+- A still-pending gateway response leaves the user at
+  `unsubscribed` and the row at `pending`. They cannot log in.
+- `userCanSkipOtp()` (both API and Web) is now a strict one-liner:
+  `return $user->isSubscribed();`. The pending-row branch is gone.
+- API `/api/auth/verify` returns HTTP 202 + no token when the
+  gateway response is not REGISTERED, signalling to the mobile
+  client to poll `/api/auth/me` until activation lands.
+- Web `/login/verify` logs the user in but routes them to a new
+  "Activating…" dashboard view with a meta-refresh that flips to
+  the active state the moment the 10-second delayed
+  `PollSubscriptionStatusJob` (next lesson) finalizes activation.
+
+The duplicate `userCanSkipOtp()` in `Web\WebAuthController` still
+exists — collapsing the two implementations across namespaces is
+out of scope for the auth-gating change.
+
+**Check next time:** Any time a system has a multi-stage
+subscription state (pending → registered), separate "the user is
+allowed to log in" from "the gateway has confirmed payment". Don't
+grant access on a soft internal status; only grant it on the hard,
+gateway-confirmed state. Optimism is for the user experience, not
+for authorization.
+
+## 2026-07-20 — The 10-second delayed job is the new primary reconcile; the cron is the safety net
+
+**What was flawed:** Activation reconciliation was tied entirely to
+`bdapps:poll-pending` running every 5 minutes. After a user
+submitted the OTP and saw the dashboard flip to pending, the gateway
+might finalise in 10–30 seconds — but the user had to wait up to 5
+minutes for the next cron tick. That's a poor experience.
+
+**Correction:** Added `App\Jobs\PollSubscriptionStatusJob` (a
+`ShouldQueue` job with `tries=3`, `backoff=[10, 30, 60]`,
+`timeout=60`). After every successful `verifyOtp()` the API and Web
+controllers dispatch it with a 10-second delay
+(`config('bdapps.delayed_getstatus_seconds')`, env
+`BDAPPS_DELAYED_GETSTATUS_SECONDS`). The job fetches `/getStatus`
+once and applies the result via the existing
+`SubscriptionService::applyNotifyStatus()` — the same single source
+of truth the inbound notify webhook uses, so the mapping is
+unchanged.
+
+The cron is kept as a safety net for rows the worker missed (worker
+down at the moment the job was scheduled). Its `--minutes` default
+drops from 5 to 1 to give the per-user job comfortable headroom;
+the `started_at` age filter in
+`BdappsSubscriptionRepository::pendingForPolling()` is now active
+(it was commented out — see the inline comment for the original
+rationale).
+
+**Check next time:** When a user-visible activation depends on a
+polling cron, ask: "is the cron interval the user experience?"
+If yes, replace it with a per-user delayed job and keep the cron as
+the safety net. The cron is for *forgetting* the system can recover
+gracefully; the job is for the user's wait.
