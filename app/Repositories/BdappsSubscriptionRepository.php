@@ -45,12 +45,14 @@ class BdappsSubscriptionRepository
      *
      * Only rows with `status='pending'` are returned — registered and
      * unregistered rows are skipped (the cron should be a no-op for
-     * them).
+     * them). The age cutoff is now active; the per-user
+     * PollSubscriptionStatusJob is the faster path, so a 1-minute
+     * minimum is comfortable headroom for it to win the race.
      */
     public function pendingForPolling(DateTimeInterface $olderThan): Collection
     {
         return BdappsSubscription::where('status', BdappsSubscription::STATUS_PENDING)
-            // ->where('started_at', '<=', $olderThan)
+            ->where('started_at', '<=', $olderThan)
             ->with('user')
             ->orderBy('id')
             ->get();

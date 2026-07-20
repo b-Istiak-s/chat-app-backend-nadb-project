@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Web;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Web\Auth\StartRequest;
 use App\Http\Requests\Web\Auth\VerifyOtpRequest;
+use App\Jobs\PollSubscriptionStatusJob;
 use App\Models\User;
 use App\Services\BdApps\SubscriptionService;
 use Illuminate\Contracts\View\View;
@@ -145,6 +146,12 @@ class WebAuthController extends Controller
             $request->session()->forget('web_auth.phone');
             $request->session()->regenerate();
 
+            // Dispatch the reconcile job — the worker picks it up
+            // after the configured delay (default 10s) and finalizes
+            // the row.
+            PollSubscriptionStatusJob::dispatch($user->id)
+                ->delay(now()->addSeconds((int) config('bdapps.delayed_getstatus_seconds', 10)));
+
             return redirect()
                 ->route('dashboard.index')
                 ->with('status', 'OTP accepted. Your subscription is being activated — this usually takes a few seconds.');
@@ -153,6 +160,12 @@ class WebAuthController extends Controller
         Auth::guard('web')->login($user);
         $request->session()->forget('web_auth.phone');
         $request->session()->regenerate();
+
+        // Already REGISTERED — the job is still useful for caching the
+        // gateway-canonical subscriber id, but the user can act right
+        // now.
+        PollSubscriptionStatusJob::dispatch($user->id)
+            ->delay(now()->addSeconds((int) config('bdapps.delayed_getstatus_seconds', 10)));
 
         return redirect()
             ->route('dashboard.index')

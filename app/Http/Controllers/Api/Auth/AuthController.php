@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\Auth;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Api\Auth\StartRequest;
 use App\Http\Requests\Api\Auth\VerifyOtpRequest;
+use App\Jobs\PollSubscriptionStatusJob;
 use App\Models\User;
 use App\Services\BdApps\SubscriptionService;
 use Illuminate\Http\JsonResponse;
@@ -104,6 +105,13 @@ class AuthController extends Controller
             }
 
             $token = $user->createToken('mobile')->plainTextToken;
+
+            // Finalize asynchronously — even on REGISTERED, a single
+            // poll against /getStatus captures the gateway-canonical
+            // subscriber id on the row and is a no-op for the user
+            // state.
+            PollSubscriptionStatusJob::dispatch($user->id)
+                ->delay(now()->addSeconds((int) config('bdapps.delayed_getstatus_seconds', 10)));
 
             return $this->sendSuccessResponse([
                 'token' => $token,

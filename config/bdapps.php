@@ -95,4 +95,31 @@ return [
         env('CHAT_MILESTONE_SMS_ENABLED', false),
         FILTER_VALIDATE_BOOLEAN
     ),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Activation reconciliation timings
+    |--------------------------------------------------------------------------
+    |
+    | Two delays govern how long a user waits between "OTP accepted" and
+    | "subscription confirmed":
+    |
+    | - `delayed_getstatus_seconds` — how long after verify the
+    |   PollSubscriptionStatusJob is held before the worker picks it
+    |   up. The worker calls /subscription/getStatus and applies the
+    |   result via SubscriptionService::applyNotifyStatus(). Default
+    |   10s — fast enough that the user sees a status change on the
+    |   next dashboard refresh, slow enough that the gateway has time
+    |   to flip INITIAL CHARGING PENDING → REGISTERED.
+    |
+    | - `pending_refresh_seconds` — how often the dashboard's
+    |   "Activating…" page meta-refreshes itself while it waits for
+    |   the job above. Default 5s — comfortably shorter than the job
+    |   delay so the user sees the active state the moment it lands.
+    |
+    */
+
+    'delayed_getstatus_seconds' => (int) env('BDAPPS_DELAYED_GETSTATUS_SECONDS', 10),
+
+    'pending_refresh_seconds' => (int) env('BDAPPS_PENDING_REFRESH_SECONDS', 5),
 ];

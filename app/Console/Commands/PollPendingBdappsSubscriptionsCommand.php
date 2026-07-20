@@ -15,21 +15,21 @@ use Illuminate\Support\Facades\Log;
  *
  * The Robi gateway often answers `/subscription/otp/verify` with
  * `subscriptionStatus: "INITIAL CHARGING PENDING"` — meaning the user
- * has been charged but the gateway hasn't finalised registration. We
- * optimistically mark such users as subscribed on /verify (so they get
- * a Sanctum token), but keep their subscription row at
- * `status='pending'` and let this command poll /getStatus every 5
- * minutes until the gateway reports REGISTERED (or another terminal
- * state).
+ * has been charged but the gateway hasn't finalised registration.
+ * The 10-second delayed `PollSubscriptionStatusJob` is the primary
+ * reconciliation path; this command is the safety net — every 5
+ * minutes it catches any rows the worker missed (e.g. queue worker
+ * was down at the moment the job was scheduled).
  *
- * Only rows with `status='pending'` are touched. Registered /
- * unregistered rows are skipped — the user's instruction was explicit:
- * "if subscribed then don't do anything".
+ * Only rows with `status='pending'` and age `--minutes` (default 1)
+ * are touched. Registered / unregistered rows are skipped — the
+ * user's instruction was explicit: "if subscribed then don't do
+ * anything".
  */
 class PollPendingBdappsSubscriptionsCommand extends Command
 {
     protected $signature = 'bdapps:poll-pending
-        {--minutes=5 : Minimum age (in minutes) of pending rows before they are polled}';
+        {--minutes=1 : Minimum age (in minutes) of pending rows before they are polled}';
 
     protected $description = 'Poll BDApps /getStatus for subscription rows stuck in pending and reconcile state.';
 
