@@ -50,7 +50,7 @@ class BdappsSubscriptionRepository
     public function pendingForPolling(DateTimeInterface $olderThan): Collection
     {
         return BdappsSubscription::where('status', BdappsSubscription::STATUS_PENDING)
-            ->where('started_at', '<=', $olderThan)
+            // ->where('started_at', '<=', $olderThan)
             ->with('user')
             ->orderBy('id')
             ->get();
