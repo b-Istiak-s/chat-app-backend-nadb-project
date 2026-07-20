@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Download the Chat App for Android.">
+    <meta name="description" content="Subscribe to ChatApp and download the Android app.">
     <title>Chat App — Connect Simply</title>
     <style>
         :root {
@@ -67,7 +67,7 @@
             letter-spacing: -0.05em;
         }
 
-        p {
+        p.lead {
             max-width: 430px;
             margin: 20px auto 32px;
             color: var(--muted);
@@ -113,12 +113,24 @@
     <main class="card">
         <div class="icon" aria-hidden="true">C</div>
         <h1>Chat App</h1>
-        <p>Stay connected with the people who matter. Simple, fast, and ready to use wherever you are.</p>
-        <a class="download-button" href="{{ asset('downloads/app-debug.apk') }}" download="chat-app.apk">
-            <span aria-hidden="true">↓</span>
-            Download APK
-        </a>
-        <p class="note">Android app · APK download</p>
+        <p class="lead">
+            Stay connected with the people who matter. Subscribe to unlock the Android app and AI chat —
+            simple, fast, and ready to use wherever you are.
+        </p>
+
+        @auth('web')
+            <a class="download-button" href="{{ route('dashboard.index') }}">
+                <span aria-hidden="true">→</span>
+                Go to dashboard
+            </a>
+            <p class="note">Signed in as +880{{ auth('web')->user()->phone }}</p>
+        @else
+            <a class="download-button" href="{{ route('login') }}">
+                <span aria-hidden="true">↓</span>
+                Subscribe and download
+            </a>
+            <p class="note">Android app · Subscription required · Verify via OTP</p>
+        @endauth
     </main>
 </body>
 </html>
