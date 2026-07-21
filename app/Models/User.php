@@ -45,4 +45,18 @@ class User extends Authenticatable
     {
         return $this->subscription_status === 'subscribed';
     }
+
+    /**
+     * True when the user has a `pending` subscription row — i.e. the
+     * gateway accepted the OTP verify but hasn't confirmed
+     * `REGISTERED` yet. Soft activation lets the user log in
+     * regardless, but the dashboard renders the "Payment not
+     * confirmed" view until this resolves.
+     */
+    public function isPaymentPending(): bool
+    {
+        return $this->bdappsSubscriptions()
+            ->where('status', BdappsSubscription::STATUS_PENDING)
+            ->exists();
+    }
 }

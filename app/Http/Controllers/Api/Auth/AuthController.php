@@ -5,7 +5,7 @@ namespace App\Http\Controllers\Api\Auth;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Api\Auth\StartRequest;
 use App\Http\Requests\Api\Auth\VerifyOtpRequest;
-use App\Jobs\PollSubscriptionStatusJob;
+use App\Models\BdappsSubscription;
 use App\Models\User;
 use App\Services\BdApps\SubscriptionService;
 use Illuminate\Http\JsonResponse;
@@ -21,7 +21,11 @@ use Symfony\Component\HttpFoundation\Response;
  *       sees a record of the login.
  *     * Otherwise trigger the standard BDApps OTP flow and return
  *       {token: null, requires_otp: true, reference_no: ...}.
- *   - verify(): confirm OTP with BDApps and mark user subscribed.
+ *   - verify(): confirm OTP with BDApps, optimistically mark the
+ *     user subscribed, and issue a Sanctum token. The token is
+ *     issued regardless of whether the gateway confirmed
+ *     `REGISTERED` — the user gets signed in and lands on the
+ *     "Payment not confirmed" view while the row reconciles.
  *   - me(): return current user phone + subscription status.
  *   - logout(): revoke current Sanctum token.
  *   - unsubscribe(): cancel BDApps subscription.
@@ -91,31 +95,16 @@ class AuthController extends Controller
                 );
             }
 
-            // Strict activation: only REGISTERED grants a Sanctum
-            // token. A still-pending gateway response returns 202
-            // with no token — the mobile client should poll
-            // /api/auth/me until `subscribed` flips.
-            $subscriptionStatus = strtoupper((string) ($result['subscription_status'] ?? ''));
-            if ($subscriptionStatus !== 'REGISTERED') {
-                return $this->sendSuccessResponse([
-                    'token' => null,
-                    'subscription_status' => $subscriptionStatus,
-                    'requires_activation' => true,
-                ], 'Subscription accepted by the gateway; still activating.', Response::HTTP_ACCEPTED);
-            }
-
+            // Soft activation: any non-empty gateway response means
+            // the OTP was accepted, so issue a Sanctum token and let
+            // the user in. The row's status (`registered` vs
+            // `pending`) drives the dashboard's "Payment not
+            // confirmed" view; the user is signed in regardless.
             $token = $user->createToken('mobile')->plainTextToken;
-
-            // Finalize asynchronously — even on REGISTERED, a single
-            // poll against /getStatus captures the gateway-canonical
-            // subscriber id on the row and is a no-op for the user
-            // state.
-            PollSubscriptionStatusJob::dispatch($user->id)
-                ->delay(now()->addSeconds((int) config('bdapps.delayed_getstatus_seconds', 10)));
 
             return $this->sendSuccessResponse([
                 'token' => $token,
-                'subscription_status' => 'REGISTERED',
+                'subscription_status' => $user->subscription_status,
             ], 'Phone verified successfully.');
         } catch (\Throwable $e) {
             return $this->handleError($e);
@@ -131,6 +120,7 @@ class AuthController extends Controller
                 'id' => $user->id,
                 'phone' => $user->phone,
                 'subscription_status' => $user->subscription_status,
+                'is_payment_pending' => $user->isPaymentPending(),
                 'subscribed_at' => $user->subscribed_at,
             ]);
         } catch (\Throwable $e) {
@@ -165,13 +155,21 @@ class AuthController extends Controller
     }
 
     /**
-     * True when the user can skip the OTP step entirely. Login is
-     * strictly gated on `users.subscription_status === 'subscribed'`
-     * — pending rows no longer grant a session because the gateway
-     * hasn't confirmed payment yet.
+     * True when the user can skip the OTP step entirely. Both
+     * `subscribed` users and users with a `pending` row trust the
+     * existing state — re-asking for an OTP would just re-charge the
+     * gateway. The dashboard's "Payment not confirmed" view (driven
+     * by the row's `status`) is what gates the *service* surface; the
+     * auth surface stays open.
      */
     private function userCanSkipOtp(User $user): bool
     {
-        return $user->isSubscribed();
+        if ($user->isSubscribed()) {
+            return true;
+        }
+
+        return $user->bdappsSubscriptions()
+            ->where('status', BdappsSubscription::STATUS_PENDING)
+            ->exists();
     }
 }

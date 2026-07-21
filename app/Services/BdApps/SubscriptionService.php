@@ -211,13 +211,17 @@ class SubscriptionService
 
     /**
      * Verify the OTP at BDApps and reflect the gateway's verdict
-     * locally. Strict activation: the user only flips to `subscribed`
-     * when the gateway confirms `REGISTERED`. If the gateway returns a
-     * "still charging" status (e.g. `INITIAL CHARGING PENDING`), the
-     * row stays at `status='pending'` and the user stays at
-     * `unsubscribed` — they cannot log in until the 10-second
-     * `PollSubscriptionStatusJob` (or the cron safety net) confirms
-     * REGISTERED.
+     * locally. Soft activation: any non-empty gateway response
+     * optimistically flips the user to `subscribed` so the login
+     * flow can issue a bearer and let the user into the app. The
+     * row itself follows the gateway's literal verdict — REGISTERED
+     * stays at `registered`, the "still charging" family
+     * (`INITIAL CHARGING PENDING`, `CHARGE_PENDING`, `PENDING`)
+     * stays at `pending`. The 10-second
+     * `PollSubscriptionStatusJob` (and the cron safety net) reconcile
+     * `pending → registered` once the gateway finalises activation;
+     * until then the user is signed in but the dashboard renders the
+     * "Payment not confirmed" view.
      *
      * Wrong/invalid OTPs come back as a gateway error and are logged
      * to the bdapps channel.
@@ -255,14 +259,16 @@ class SubscriptionService
         $isRegistered = $gatewayStatus === 'REGISTERED';
         $isPending = $this->bdApps->isPendingStatus($gatewayStatus);
 
-        // Mirror the gateway's verdict on the user record. The
-        // previous optimistic-flip behaviour (marking the user
-        // subscribed even when the gateway said pending) is gone —
-        // see agents/lessons.md for the rationale.
-        if ($isRegistered) {
+        // Optimistic user-state flip: any non-empty gateway status
+        // means the gateway accepted the verify. The user can sign
+        // in immediately; the *service* surface (chat, APK download)
+        // stays gated until the row itself flips to `registered`.
+        // This is the deliberate "auth surface open, service surface
+        // gated" model — see agents/lessons.md.
+        if ($gatewayStatus !== '') {
             $user->forceFill([
                 'subscription_status' => 'subscribed',
-                'subscribed_at' => now(),
+                'subscribed_at' => $user->subscribed_at ?? now(),
                 'phone_verified_at' => now(),
             ])->save();
         } else {

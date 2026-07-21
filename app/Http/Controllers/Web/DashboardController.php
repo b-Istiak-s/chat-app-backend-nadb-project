@@ -5,7 +5,6 @@ namespace App\Http\Controllers\Web;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Web\Auth\StartRequest;
 use App\Http\Requests\Web\Auth\VerifyOtpRequest;
-use App\Models\BdappsSubscription;
 use App\Models\User;
 use App\Services\BdApps\SubscriptionService;
 use Illuminate\Contracts\View\View;
@@ -17,15 +16,16 @@ use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * Authenticated dashboard — four screens render from this single
+ * Authenticated dashboard — five screens render from this single
  * template:
  *
- *   - unsubscribed → subscribe form
- *   - awaiting OTP → verify form
- *   - activating   → auto-refreshing "Activating…" page (after
- *                    verify, while the gateway hasn't yet confirmed
- *                    REGISTERED — the 10s job is finalising)
- *   - subscribed   → APK download + unsubscribe
+ *   - unsubscribed         → subscribe form
+ *   - awaiting OTP         → verify form
+ *   - payment not confirmed (auto-refreshing "Payment not confirmed"
+ *                            view — the OTP was accepted but the
+ *                            gateway hasn't yet flipped the row to
+ *                            `registered`)
+ *   - subscribed           → APK download + unsubscribe
  *
  * Every action delegates business work to SubscriptionService; the
  * controller only owns request shaping and the view layer.
@@ -51,15 +51,17 @@ class DashboardController extends Controller
 
         $awaitingOtp = (bool) $request->session()->get('web_auth.awaiting_otp');
 
-        $isActivating = ! $user->isSubscribed()
-            && $latestSubscription
-            && $latestSubscription->status === BdappsSubscription::STATUS_PENDING;
+        // Soft activation: `isSubscribed()` is the auth-surface gate,
+        // `isPaymentPending()` is the service-surface gate. A user can
+        // be `subscribed` (token issued, signed in) AND have a
+        // `pending` row — that's the "payment not confirmed" state.
+        $isPaymentPending = $user->isSubscribed() && $user->isPaymentPending();
 
         return view('web.dashboard', [
             'user' => $user,
             'subscription' => $latestSubscription,
             'awaitingOtp' => $awaitingOtp,
-            'isActivating' => $isActivating,
+            'isPaymentPending' => $isPaymentPending,
             'refreshSeconds' => (int) config('bdapps.pending_refresh_seconds', 5),
         ]);
     }
@@ -102,7 +104,7 @@ class DashboardController extends Controller
         $otp = $request->string('otp')->toString();
 
         try {
-            $result = $this->subscriptionService->verifyOtp($user, $otp);
+            $this->subscriptionService->verifyOtp($user, $otp);
         } catch (\Throwable $e) {
             report($e);
 
@@ -113,20 +115,12 @@ class DashboardController extends Controller
 
         $request->session()->forget('web_auth.awaiting_otp');
 
-        $gatewayStatus = strtoupper((string) ($result['subscription_status'] ?? ''));
-
-        // Strict activation: REGISTERED → "active now"; anything
-        // else → activating. The dashboard renders the right view
-        // either way; the difference is the flash banner.
-        if ($gatewayStatus === 'REGISTERED') {
-            return redirect()
-                ->route('dashboard.index')
-                ->with('status', 'Subscription activated. You can now download the app.');
-        }
-
+        // Soft activation: the user is signed in either way; the
+        // dashboard's `isPaymentPending` branch picks the right
+        // view based on the row's status.
         return redirect()
             ->route('dashboard.index')
-            ->with('status', 'OTP accepted. Your subscription is being activated — this usually takes a few seconds.');
+            ->with('status', 'Subscription activated. You can now download the app.');
     }
 
     public function refreshStatus(Request $request): RedirectResponse

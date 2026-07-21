@@ -8,10 +8,10 @@
                 You're signed in as <strong>+880{{ $user->phone }}</strong>.
             </p>
 
-            @if ($user->isSubscribed())
+            @if ($user->isSubscribed() && ! $isPaymentPending)
                 <span class="badge badge-success">Active</span>
-            @elseif ($isActivating)
-                <span class="badge badge-warning">Activating…</span>
+            @elseif ($isPaymentPending)
+                <span class="badge badge-warning">Payment not confirmed</span>
             @elseif ($awaitingOtp)
                 <span class="badge badge-warning">Awaiting OTP</span>
             @else
@@ -21,7 +21,7 @@
     </div>
 
     {{-- ────────────────────────── Active subscription ────────────────────────── --}}
-    @if ($user->isSubscribed())
+    @if ($user->isSubscribed() && ! $isPaymentPending)
         <div class="card">
             <h2>Download the ChatApp</h2>
             <p class="muted">
@@ -62,19 +62,23 @@
                 </form>
             </div>
         </div>
-    {{-- ─────────────────────── Activating (post-verify pending) ─────────────────── --}}
-    @elseif ($isActivating)
+    {{-- ─────────────────── Payment not confirmed (post-verify pending) ──────────────── --}}
+    @elseif ($isPaymentPending)
         {{-- Auto-refresh while the 10s job + cron reconcile. Meta-refresh
              keeps the page no-JS and survives the user closing the tab
-             then reopening. --}}
+             then reopening. The user is signed in but the gateway has
+             not yet confirmed REGISTERED — they can read this page,
+             refresh, and navigate; the APK download remains gated
+             (it's inside the subscribed branch above). --}}
         <meta http-equiv="refresh" content="{{ $refreshSeconds }}">
 
         <div class="card">
-            <h2>Activating your subscription…</h2>
+            <h2>Payment not confirmed</h2>
             <p class="muted">
-                We accepted your OTP, but the gateway hasn't confirmed
-                payment yet. This usually takes a few seconds — this
-                page will refresh itself.
+                Your payment wasn't confirmed yet. We're checking with
+                the gateway — this usually takes a few seconds. This
+                page refreshes itself; you can also press the button
+                below to check now.
             </p>
 
             @if ($subscription)
@@ -97,7 +101,7 @@
 
                 <form action="{{ route('logout') }}" method="POST">
                     @csrf
-                    <button type="submit" class="btn btn-secondary">Cancel and sign out</button>
+                    <button type="submit" class="btn btn-secondary">Sign out</button>
                 </form>
             </div>
         </div>

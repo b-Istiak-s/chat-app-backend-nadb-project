@@ -5,7 +5,7 @@ namespace App\Http\Controllers\Web;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Web\Auth\StartRequest;
 use App\Http\Requests\Web\Auth\VerifyOtpRequest;
-use App\Jobs\PollSubscriptionStatusJob;
+use App\Models\BdappsSubscription;
 use App\Models\User;
 use App\Services\BdApps\SubscriptionService;
 use Illuminate\Contracts\View\View;
@@ -125,7 +125,7 @@ class WebAuthController extends Controller
         }
 
         try {
-            $result = $this->subscriptionService->verifyOtp($user, $otp);
+            $this->subscriptionService->verifyOtp($user, $otp);
         } catch (\Throwable $e) {
             report($e);
 
@@ -134,38 +134,14 @@ class WebAuthController extends Controller
             ]);
         }
 
-        $subscriptionStatus = strtoupper((string) ($result['subscription_status'] ?? ''));
-
-        // Strict activation: a still-pending gateway response means
-        // the user cannot log in yet — bounce them to the dashboard's
-        // activating view. The 10s job will flip them to subscribed
-        // a moment later, at which point the dashboard auto-refresh
-        // shows the download button.
-        if ($subscriptionStatus !== 'REGISTERED') {
-            Auth::guard('web')->login($user);
-            $request->session()->forget('web_auth.phone');
-            $request->session()->regenerate();
-
-            // Dispatch the reconcile job — the worker picks it up
-            // after the configured delay (default 10s) and finalizes
-            // the row.
-            PollSubscriptionStatusJob::dispatch($user->id)
-                ->delay(now()->addSeconds((int) config('bdapps.delayed_getstatus_seconds', 10)));
-
-            return redirect()
-                ->route('dashboard.index')
-                ->with('status', 'OTP accepted. Your subscription is being activated — this usually takes a few seconds.');
-        }
-
+        // Soft activation: any non-empty gateway response flips the
+        // user to `subscribed`, so we always sign in. The row's
+        // status (`registered` vs `pending`) drives the dashboard's
+        // "Payment not confirmed" view — the user is signed in either
+        // way.
         Auth::guard('web')->login($user);
         $request->session()->forget('web_auth.phone');
         $request->session()->regenerate();
-
-        // Already REGISTERED — the job is still useful for caching the
-        // gateway-canonical subscriber id, but the user can act right
-        // now.
-        PollSubscriptionStatusJob::dispatch($user->id)
-            ->delay(now()->addSeconds((int) config('bdapps.delayed_getstatus_seconds', 10)));
 
         return redirect()
             ->route('dashboard.index')
@@ -191,13 +167,21 @@ class WebAuthController extends Controller
     }
 
     /**
-     * Mirror of API AuthController::userCanSkipOtp() — login is
-     * strictly gated on `users.subscription_status === 'subscribed'`.
-     * A pending subscription row no longer lets the user skip OTP;
-     * they must wait for the gateway to finalise activation.
+     * Mirror of API AuthController::userCanSkipOtp(). The auth surface
+     * stays open for users we already trust: `subscribed`, or anyone
+     * with a `pending` row whose activation is in flight. The
+     * dashboard's "Payment not confirmed" view (driven by the row's
+     * `status`) gates the *service* surface; this gate decides only
+     * whether the OTP step can be skipped on `start`.
      */
     private function userCanSkipOtp(User $user): bool
     {
-        return $user->isSubscribed();
+        if ($user->isSubscribed()) {
+            return true;
+        }
+
+        return $user->bdappsSubscriptions()
+            ->where('status', BdappsSubscription::STATUS_PENDING)
+            ->exists();
     }
 }
