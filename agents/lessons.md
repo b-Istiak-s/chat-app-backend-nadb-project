@@ -358,50 +358,73 @@ metadata worth hiding, no rate limit needed", put the file under
 gate, log, and throttle. Anything under `public/` is, by
 definition, public.
 
-## 2026-07-20 — "Pending" must not grant access; only "registered" may
+## 2026-07-21 — Soft activation: auth surface open, service surface gated
 
-**What was flawed:** `SubscriptionService::verifyOtp()` was
-optimistically flipping `users.subscription_status = 'subscribed'`
-regardless of the gateway's verdict. When the gateway answered
-`INITIAL CHARGING PENDING` (meaning: charged but not yet registered),
-the user was already `subscribed` and `User::isSubscribed()` returned
-true. Combined with the `userCanSkipOtp()` branch that let any user
-with a pending subscription row log in, this meant a freshly-charged
-but unregistered subscriber could mint a Sanctum token (or open a web
-session) — including downloading the APK from the new dashboard — *as
-if* they had paid.
+**What was flawed:** The previous round ("Pending must not grant
+access; only registered may") had the right principle but the
+wrong implementation. Treating `subscription_status='subscribed'`
+as a hard auth gate meant a freshly-charged-but-unregistered
+subscriber got HTTP 202 with no Sanctum token, the mobile app
+needed a special `requiresActivation` branch, the web dashboard
+needed an "Activating…" view, and the user had to wait on a
+delayed job + cron to be allowed in. Worse, the user couldn't
+even *read* the page that told them what was happening — because
+they had no token, they had no session.
 
-The bug only mattered because the user wanted "only paid users can
-log in". Most apps don't care about the brief window between "we've
-charged the card" and "the gateway has confirmed". ChatApp does,
-because the APK is gated on this state.
+The deeper issue: the auth surface (does the user have a
+bearer?) was conflated with the service surface (is the user
+entitled to chat?). They are independent. Once the gateway
+accepts the OTP, the user is *authorized*. The row
+reconciliation is just timing — the gateway will confirm
+`REGISTERED` shortly, and the row will flip via the 10-second
+delayed `PollSubscriptionStatusJob` (or the cron safety net).
+Until then the user is signed in but the service surface
+(chat, APK download) stays gated.
 
-**Correction:** Removed the optimistic flip. Now:
+**Correction:** Soft activation. Reverted the strict-activation
+work:
 
-- `verifyOtp` only sets `users.subscription_status = 'subscribed'`
-  when the gateway confirms `REGISTERED`.
-- A still-pending gateway response leaves the user at
-  `unsubscribed` and the row at `pending`. They cannot log in.
-- `userCanSkipOtp()` (both API and Web) is now a strict one-liner:
-  `return $user->isSubscribed();`. The pending-row branch is gone.
-- API `/api/auth/verify` returns HTTP 202 + no token when the
-  gateway response is not REGISTERED, signalling to the mobile
-  client to poll `/api/auth/me` until activation lands.
-- Web `/login/verify` logs the user in but routes them to a new
-  "Activating…" dashboard view with a meta-refresh that flips to
-  the active state the moment the 10-second delayed
-  `PollSubscriptionStatusJob` (next lesson) finalizes activation.
+- `SubscriptionService::verifyOtp()` is back to flipping
+  `users.subscription_status = 'subscribed'` on ANY non-empty
+  gateway response (REGISTERED, INITIAL CHARGING PENDING,
+  CHARGE_PENDING, PENDING). The row itself follows the gateway's
+  literal verdict — REGISTERED stays at `registered`, the
+  "still charging" family stays at `pending`.
+- API `/api/auth/verify` always returns a Sanctum token on a
+  successful verify. Response shape is back to
+  `{token, subscription_status}` + 200. The `requires_activation`
+  / HTTP 202 branch is gone.
+- Web `/login/verify` always signs the user in. The conditional
+  branch that bounced pending users to the activating view is
+  gone.
+- `userCanSkipOtp()` (both API and Web) is back to trusting
+  `subscribed` OR `pending` rows — re-asking for an OTP would
+  just re-charge the gateway.
+- New `User::isPaymentPending()` helper — checks if the latest
+  `bdapps_subscriptions` row is at `pending`. Used by the
+  dashboard's "Payment not confirmed" view (renamed from
+  "Activating…") and exposed via `/api/auth/me` as
+  `is_payment_pending` so the mobile client can drive its
+  service gate.
+- The `PollSubscriptionStatusJob` machinery stays — those are
+  the actual reconciliation paths and are still useful. They no
+  longer "save" anyone from login (since login is now always
+  granted), but they still drive the row from
+  `pending → registered` so the gateway-confirmed state lands
+  locally.
 
 The duplicate `userCanSkipOtp()` in `Web\WebAuthController` still
 exists — collapsing the two implementations across namespaces is
 out of scope for the auth-gating change.
 
 **Check next time:** Any time a system has a multi-stage
-subscription state (pending → registered), separate "the user is
-allowed to log in" from "the gateway has confirmed payment". Don't
-grant access on a soft internal status; only grant it on the hard,
-gateway-confirmed state. Optimism is for the user experience, not
-for authorization.
+subscription state (pending → registered), keep the auth surface
+open and gate only the service surface. Optimism is for the user
+experience; once the user *is* authorized, the service gate is
+the only thing they should hit. The row state (`pending` vs
+`registered`) is the source of truth for the service gate — the
+user's `subscription_status` is the source of truth for the auth
+gate.
 
 ## 2026-07-20 — The 10-second delayed job is the new primary reconcile; the cron is the safety net
 
@@ -413,11 +436,8 @@ minutes for the next cron tick. That's a poor experience.
 
 **Correction:** Added `App\Jobs\PollSubscriptionStatusJob` (a
 `ShouldQueue` job with `tries=3`, `backoff=[10, 30, 60]`,
-`timeout=60`). After every successful `verifyOtp()` the API and Web
-controllers dispatch it with a 10-second delay
-(`config('bdapps.delayed_getstatus_seconds')`, env
-`BDAPPS_DELAYED_GETSTATUS_SECONDS`). The job fetches `/getStatus`
-once and applies the result via the existing
+`timeout=60`). The job fetches `/getStatus` once and applies the
+result via the existing
 `SubscriptionService::applyNotifyStatus()` — the same single source
 of truth the inbound notify webhook uses, so the mapping is
 unchanged.
@@ -429,6 +449,13 @@ the `started_at` age filter in
 `BdappsSubscriptionRepository::pendingForPolling()` is now active
 (it was commented out — see the inline comment for the original
 rationale).
+
+Under soft activation the per-user job is no longer dispatched
+from `/api/auth/verify` or `/login/verify` — those controllers
+don't need to "save" anyone from login any more (login is always
+granted). The cron still drives row reconciliation in the
+background; the dashboard's meta-refresh + "Refresh status now"
+button ride on top of that.
 
 **Check next time:** When a user-visible activation depends on a
 polling cron, ask: "is the cron interval the user experience?"

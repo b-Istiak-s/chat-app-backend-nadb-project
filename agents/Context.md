@@ -36,11 +36,11 @@ to phone-only subscription login.
 ### Endpoints
 
 **Auth (public):**
-- `POST /api/auth/start`     — find-or-create user, send BDApps OTP, return `{token?, requiresOtp, referenceNo}`
-- `POST /api/auth/verify`    — verify OTP. Returns `{token}` + 200 only when gateway confirms `REGISTERED`. Otherwise returns `{token: null, subscription_status, requires_activation: true}` + 202 — the mobile client polls `/api/auth/me` until activation lands. After every verify a `PollSubscriptionStatusJob` is dispatched with a 10-second delay to finalize activation.
+- `POST /api/auth/start`     — find-or-create user, send BDApps OTP, return `{token?, requiresOtp, referenceNo}`. A token is issued immediately for subscribed users OR users with a pending subscription row (soft activation: the auth surface stays open).
+- `POST /api/auth/verify`    — verify OTP. Always returns `{token, subscription_status}` + 200 on success — soft activation. The dashboard's "Payment not confirmed" view handles the case where the row is still `pending`.
 
 **Auth (protected, `auth:sanctum`):**
-- `GET  /api/auth/me`        — phone + subscription status
+- `GET  /api/auth/me`        — phone + subscription status. Returns `{id, phone, subscription_status, is_payment_pending, subscribed_at}`. `is_payment_pending` is true when the latest `bdapps_subscriptions` row is still `pending` (the gateway accepted the OTP but hasn't yet confirmed REGISTERED).
 - `POST /api/auth/logout`    — revoke token
 - `POST /api/auth/unsubscribe` — cancel BDApps subscription
 
@@ -54,13 +54,13 @@ to phone-only subscription login.
 **Web dashboard (cookie session via `web` guard — separate from Sanctum):**
 - `GET  /`                       — landing page (CTAs to `/login`)
 - `GET  /login`                  — phone form (or OTP step when pending)
-- `POST /login/start`            — kick BDApps OTP
-- `POST /login/verify`           — verify OTP, sign web session in (regardless of REGISTERED vs pending — pending users land on the activating view)
+- `POST /login/start`            — kick BDApps OTP. Trust path: subscribed OR pending row → sign in directly.
+- `POST /login/verify`           — verify OTP, sign web session in (always — soft activation: any non-empty gateway response flips the user to `subscribed`).
 - `POST /logout`                 — sign web session out
-- `GET  /dashboard`              — subscription status + controls. Renders four states: unsubscribed, awaiting OTP, **activating** (auto-refreshing "Activating…" while the 10s job + cron reconcile), subscribed. (auth)
+- `GET  /dashboard`              — subscription status + controls. Renders five states: unsubscribed, awaiting OTP, **payment not confirmed** (auto-refreshing "Payment not confirmed" while the cron + 10s job reconcile), subscribed. (auth)
 - `POST /dashboard/subscribe`    — kick OTP, mark awaiting-Otp in session (auth)
 - `POST /dashboard/verify`       — verify OTP (auth)
-- `POST /dashboard/refresh`      — poll gateway now and apply the result (auth) — the "Refresh status now" button on the activating view
+- `POST /dashboard/refresh`      — poll gateway now and apply the result (auth) — the "Refresh status now" button on the payment-not-confirmed view
 - `POST /dashboard/unsubscribe`  — cancel BDApps subscription (auth)
 - `GET  /downloads/app.apk`      — gated APK download, 403 unless subscribed (auth)
 

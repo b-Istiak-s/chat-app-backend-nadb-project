@@ -358,3 +358,103 @@ not what "subscribed" means.
 in. Activation flow uses a 10-second delayed job for the user's
 UX and a 5-minute cron as the safety net. Dashboard renders an
 auto-refreshing "Activating…" page while the user waits.
+
+## 2026-07-21 — Soft activation reversal
+
+**Feature:** Revert the strict-activation model (rejected by user
+on review). Allow login once the gateway accepts the OTP; show a
+"Payment not confirmed" page that polls until the row flips to
+`registered`, then let the user continue into the chat / APK
+download.
+
+**Prompt:** "allow login but show a page, saying that payment
+wasn't confirmed. Then it will keep polling...the backend to
+see if the user has successfully registered. Finally, if they
+are just then they can continue to use the service." + "do it
+on both backend and app".
+
+**Plan:**
+
+### Why this change exists
+
+The previous round ("Strict activation + per-user 10s reconcile
+job") had the right principle but the wrong implementation.
+The HTTP 202 / no-token branch for pending gateway responses
+prevented the user from reading the page that told them what
+was happening — they had no session, no token, no way to
+refresh. The "auth surface stays open, service surface stays
+gated" model is the right shape: any user with a Sanctum token
+(or web session) can navigate, refresh, read the "Payment not
+confirmed" view; the chat / APK download stay gated on a
+fully-confirmed row.
+
+### Services / controllers / jobs — modified
+
+- `app/Services/BdApps/SubscriptionService.php`
+  - `verifyOtp()` flips `users.subscription_status =
+    'subscribed'` on ANY non-empty gateway response (REGISTERED,
+    INITIAL CHARGING PENDING, CHARGE_PENDING, PENDING). The row
+    mapping is unchanged.
+- `app/Http/Controllers/Api/Auth/AuthController.php`
+  - `verify()` always issues a Sanctum token on success. The
+    `requires_activation` / HTTP 202 branch is gone. Response
+    shape is back to `{token, subscription_status}` + 200. The
+    `PollSubscriptionStatusJob` dispatch from `verify()` is
+    dropped (the dashboard's meta-refresh / "Refresh now"
+    + the cron + the existing 10-second job (still dispatched
+    from the web/dashboard side, when applicable) cover
+    reconciliation).
+  - `me()` adds `is_payment_pending` to the response payload.
+  - `userCanSkipOtp()` is back to trusting `subscribed` OR
+    `pending` rows.
+- `app/Http/Controllers/Web/WebAuthController.php`
+  - `verify()` always signs the user in. The conditional
+    branch on `subscription_status !== 'REGISTERED'` is gone.
+  - `userCanSkipOtp()` mirrors the API rule.
+- `app/Http/Controllers/Web/DashboardController.php`
+  - `index()` computes `isPaymentPending =
+    isSubscribed() && isPaymentPending()`. The view receives a
+    renamed flag.
+  - `verify()` returns the "Subscription activated" flash
+    string unconditionally — the row state drives the rendered
+    view.
+- `app/Models/User.php`
+  - New `isPaymentPending()` helper.
+- `app/Jobs/PollSubscriptionStatusJob.php`
+  - Kept. No behaviour change — it still polls `/getStatus`
+    and applies via `applyNotifyStatus()`. The dashboard's
+    meta-refresh rides on top of it.
+
+### View
+
+- `resources/views/web/dashboard.blade.php`:
+  - Renamed `elseif ($isActivating)` branch to "Payment not
+    confirmed" with matching copy. Pill label changes from
+    "Activating…" to "Payment not confirmed". The
+    "Refresh status now" button + sign-out form stay.
+
+### Modular commit history
+
+1. `feat(auth): soft activation — service surface gates on row state`
+   — SubscriptionService + API/Web AuthControllers +
+     DashboardController + User model + dashboard view.
+2. `feat(auth): /api/auth/me returns is_payment_pending`
+   — User endpoint surfaces the row state to mobile clients.
+
+**Verification:**
+
+- `php -l` clean on every modified PHP file.
+- `php artisan view:cache` succeeds.
+- `php artisan route:list` unchanged.
+- Live smoke test: `/login` → `/dashboard` (payment-not-confirmed
+  branch) → "Refresh status now" (or wait for cron) → `/dashboard`
+  (subscribed branch) → `/downloads/app.apk` (gated).
+- `vendor/bin/pint --dirty --format agent` passes.
+
+**Outcome:** Auth surface stays open; service surface stays gated.
+The user is signed in once the gateway accepts the OTP. While the
+row is still `pending`, the dashboard renders the "Payment not
+confirmed" view with auto-refresh and a manual "Refresh now"
+button. The 10-second delayed `PollSubscriptionStatusJob` and the
+cron safety net drive row reconciliation in the background — login
+no longer depends on them.
