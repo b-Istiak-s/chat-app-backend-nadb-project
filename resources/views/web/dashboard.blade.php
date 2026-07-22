@@ -11,7 +11,7 @@
             @if ($user->isSubscribed() && ! $isPaymentPending)
                 <span class="badge badge-success">Active</span>
             @elseif ($isPaymentPending)
-                <span class="badge badge-warning">Payment not confirmed</span>
+                <span class="badge badge-warning">Pending</span>
             @elseif ($awaitingOtp)
                 <span class="badge badge-warning">Awaiting OTP</span>
             @else
@@ -72,23 +72,47 @@
              (it's inside the subscribed branch above). --}}
         <meta http-equiv="refresh" content="{{ $refreshSeconds }}">
 
-        <div class="card">
-            <h2>Payment not confirmed</h2>
-            <p class="muted">
-                Your payment wasn't confirmed yet. We're checking with
-                the gateway — this usually takes a few seconds. This
-                page refreshes itself; you can also press the button
-                below to check now.
+        <div class="card pending">
+            <div class="pending-head">
+                <div class="pending-spinner" aria-hidden="true"></div>
+                <div>
+                    <span class="badge badge-warning">Awaiting payment confirmation</span>
+                    <h2 style="margin: 8px 0 2px;">Your payment is still pending</h2>
+                </div>
+            </div>
+
+            <p class="muted" style="margin-top: 4px;">
+                We've sent your subscription request to the gateway and they're confirming
+                the payment on their side. This usually finishes within a few seconds.
+                <strong>Please don't close this page.</strong> We'll auto-refresh, or you
+                can press the button below to check now.
             </p>
 
+            <div class="pending-steps" aria-label="What's happening">
+                <div class="pending-step">
+                    <span class="step-num">1</span> OTP verified ✓
+                </div>
+                <div class="pending-step">
+                    <span class="step-num">2</span> Gateway charging your account…
+                </div>
+                <div class="pending-step">
+                    <span class="step-num">3</span> Subscription becomes active
+                </div>
+            </div>
+
             @if ($subscription)
-                <dl class="meta">
-                    <dt>Gateway status</dt>
+                <dl class="meta" style="margin-top: 14px;">
+                    <dt>Gateway reports</dt>
                     <dd><code>{{ $subscription->bdapps_subscription_status ?? 'PENDING' }}</code></dd>
 
                     @if ($subscription->started_at)
-                        <dt>Started</dt>
+                        <dt>Request sent</dt>
                         <dd>{{ $subscription->started_at->format('Y-m-d H:i') }}</dd>
+                    @endif
+
+                    @if ($subscription->last_notified_at)
+                        <dt>Last update from gateway</dt>
+                        <dd>{{ $subscription->last_notified_at->diffForHumans() }}</dd>
                     @endif
                 </dl>
             @endif

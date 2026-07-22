@@ -230,6 +230,73 @@
 
         .meta dt { font-weight: 600; color: var(--text); }
         .meta dd { margin: 2px 0 12px; color: var(--text-muted); }
+
+        /* ── Pending-payment screen ── */
+        .pending {
+            border-color: rgba(245, 158, 11, 0.45);
+            background:
+                linear-gradient(135deg, rgba(245, 158, 11, 0.12), rgba(245, 158, 11, 0.02) 60%),
+                var(--surface);
+        }
+
+        .pending-head {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 6px;
+        }
+
+        .pending-spinner {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border: 3px solid rgba(245, 158, 11, 0.25);
+            border-top-color: #f59e0b;
+            animation: pending-spin 0.9s linear infinite;
+            flex-shrink: 0;
+        }
+
+        @keyframes pending-spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .pending-steps {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+            margin: 18px 0 4px;
+        }
+
+        .pending-step {
+            padding: 12px 14px;
+            border-radius: 12px;
+            background: rgba(245, 158, 11, 0.06);
+            border: 1px solid rgba(245, 158, 11, 0.18);
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        .pending-step .step-num {
+            display: inline-block;
+            width: 22px;
+            height: 22px;
+            line-height: 22px;
+            text-align: center;
+            border-radius: 50%;
+            background: rgba(245, 158, 11, 0.18);
+            color: #fcd34d;
+            font-weight: 700;
+            font-size: 0.75rem;
+            margin-right: 8px;
+        }
+
+        @media (max-width: 540px) {
+            .pending-steps { grid-template-columns: 1fr; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .pending-spinner { animation: none; }
+        }
     </style>
 </head>
 <body>
