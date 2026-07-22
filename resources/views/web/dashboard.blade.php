@@ -8,11 +8,11 @@
                 You're signed in as <strong>+880{{ $user->phone }}</strong>.
             </p>
 
-            @if ($user->isSubscribed() && ! $isPaymentPending)
+            @if ($user->isVerified() && ! $hasPendingCharge)
                 <span class="badge badge-success">Active</span>
-            @elseif ($isPaymentPending)
-                <span class="badge badge-warning">Pending</span>
-            @elseif ($awaitingOtp)
+            @elseif ($user->isVerified() && $hasPendingCharge)
+                <span class="badge badge-warning">Payment pending</span>
+            @elseif ($awaitingOtp || $user->isAwaitingOtp())
                 <span class="badge badge-warning">Awaiting OTP</span>
             @else
                 <span class="badge badge-muted">Not subscribed</span>
@@ -21,7 +21,7 @@
     </div>
 
     {{-- ────────────────────────── Active subscription ────────────────────────── --}}
-    @if ($user->isSubscribed() && ! $isPaymentPending)
+    @if ($user->isVerified() && ! $hasPendingCharge)
         <div class="card">
             <h2>Download the ChatApp</h2>
             <p class="muted">
@@ -29,13 +29,9 @@
             </p>
 
             <dl class="meta">
-                <dt>Status</dt>
+                <dt>Gateway reports</dt>
                 <dd>
-                    @if ($subscription)
-                        Gateway: <code>{{ $subscription->bdapps_subscription_status ?? 'REGISTERED' }}</code>
-                    @else
-                        Gateway: <code>REGISTERED</code>
-                    @endif
+                    <code>{{ $subscription?->bdapps_subscription_status ?? 'REGISTERED' }}</code>
                 </dd>
 
                 @if ($user->subscribed_at)
@@ -62,14 +58,14 @@
                 </form>
             </div>
         </div>
-    {{-- ─────────────────── Payment not confirmed (post-verify pending) ──────────────── --}}
-    @elseif ($isPaymentPending)
+
+    {{-- ──────────────────────────── Payment pending (post-verify) ─────────────────────────── --}}
+    @elseif ($user->isVerified() && $hasPendingCharge)
         {{-- Auto-refresh while the 10s job + cron reconcile. Meta-refresh
              keeps the page no-JS and survives the user closing the tab
              then reopening. The user is signed in but the gateway has
-             not yet confirmed REGISTERED — they can read this page,
-             refresh, and navigate; the APK download remains gated
-             (it's inside the subscribed branch above). --}}
+             not yet taken the money — they see this view. The APK
+             download is gated (it's inside the Active branch above). --}}
         <meta http-equiv="refresh" content="{{ $refreshSeconds }}">
 
         <div class="card pending">
@@ -136,8 +132,9 @@
                 </form>
             </div>
         </div>
-    {{-- ─────────────────────── Awaiting OTP verification ─────────────────────── --}}
-    @elseif ($awaitingOtp)
+
+    {{-- ────────────────────────── Awaiting OTP verification ────────────────────────── --}}
+    @elseif ($awaitingOtp || $user->isAwaitingOtp())
         <div class="card">
             <h2>Verify your OTP</h2>
             <p class="muted">
@@ -169,26 +166,36 @@
                 <div class="actions">
                     <button type="submit" class="btn btn-primary">Activate subscription</button>
 
-                    <form action="{{ route('dashboard.unsubscribe') }}" method="POST" style="display:inline;">
-                        @csrf
-                        <button type="submit" class="btn btn-danger">Cancel</button>
-                    </form>
+                    <a href="{{ route('logout') }}" class="btn btn-secondary"
+                       style="text-decoration:none; padding: 12px 22px;">
+                        Sign out
+                    </a>
                 </div>
             </form>
         </div>
-    {{-- ────────────────────────── Not yet subscribed ─────────────────────────── --}}
+
+    {{-- ────────────────────────── Cancelled or fresh ────────────────────────── --}}
     @else
         <div class="card">
-            <h2>Subscribe</h2>
-            <p class="muted">
-                Subscribe to ChatApp to unlock the Android app and AI chat. We'll send a one-time
-                password to your phone to confirm.
-            </p>
+            @if ($user->isCancelled())
+                <h2>Your previous subscription was cancelled</h2>
+                <p class="muted">
+                    You can re-subscribe below — we'll send a fresh OTP to your phone.
+                </p>
+            @else
+                <h2>Subscribe</h2>
+                <p class="muted">
+                    Subscribe to ChatApp to unlock the Android app and AI chat. We'll send a one-time
+                    password to your phone to confirm.
+                </p>
+            @endif
 
             <form action="{{ route('dashboard.subscribe') }}" method="POST">
                 @csrf
                 <div class="actions">
-                    <button type="submit" class="btn btn-primary">Subscribe via OTP</button>
+                    <button type="submit" class="btn btn-primary">
+                        {{ $user->isCancelled() ? 'Re-subscribe via OTP' : 'Subscribe via OTP' }}
+                    </button>
                 </div>
             </form>
         </div>

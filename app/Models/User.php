@@ -41,22 +41,87 @@ class User extends Authenticatable
         return $this->hasMany(ChatMessage::class);
     }
 
-    public function isSubscribed(): bool
+    /**
+     * Token-bearing user. In the new three-state model this means
+     * the user's `subscription_status` is `pending` — the OTP was
+     * verified by us and they are signed in. The user MAY also have
+     * a BDApps `REGISTERED` mirror (in which case they have full
+     * access), or a PENDING-family mirror (in which case the app
+     * shows the "Payment pending" page).
+     */
+    public function isVerified(): bool
     {
-        return $this->subscription_status === 'subscribed';
+        return $this->subscription_status === 'pending';
     }
 
     /**
-     * True when the user has a `pending` subscription row — i.e. the
-     * gateway accepted the OTP verify but hasn't confirmed
-     * `REGISTERED` yet. Soft activation lets the user log in
-     * regardless, but the dashboard renders the "Payment not
-     * confirmed" view until this resolves.
+     * User has not yet entered the OTP (or their previous session
+     * was cancelled). They cannot get a Sanctum token; the next
+     * `/api/auth/start` will request a fresh OTP.
+     */
+    public function isAwaitingOtp(): bool
+    {
+        return $this->subscription_status === 'unverified';
+    }
+
+    /**
+     * Terminal: user cancelled, or the gateway returned a
+     * non-`REGISTERED` terminal status. No token; the next login
+     * starts a fresh OTP.
+     */
+    public function isCancelled(): bool
+    {
+        return $this->subscription_status === 'cancelled';
+    }
+
+    /**
+     * The user's most recent subscription row — used by the
+     * dashboard and the app router to read the gateway mirror
+     * (`bdapps_subscription_status`) and decide whether to render
+     * chat or the "Payment pending" page.
+     */
+    public function latestSubscription(): ?BdappsSubscription
+    {
+        return $this->bdappsSubscriptions()->orderByDesc('id')->first();
+    }
+
+    /**
+     * True when the user is verified (`pending`) AND the latest
+     * gateway mirror is non-`REGISTERED` — i.e. BDApps is still
+     * mid-charge. The dashboard renders the "Payment pending" view
+     * for this case. Replaces the old `isPaymentPending()` helper
+     * from the previous model.
+     */
+    public function hasPendingCharge(): bool
+    {
+        if (! $this->isVerified()) {
+            return false;
+        }
+
+        $mirror = (string) ($this->latestSubscription()?->bdapps_subscription_status ?? '');
+
+        return $mirror !== '' && $mirror !== 'REGISTERED';
+    }
+
+    /**
+     * Backwards-compatible alias for `isVerified()`. Kept during
+     * the migration window so existing call sites keep working.
+     *
+     * @deprecated Use isVerified() instead.
+     */
+    public function isSubscribed(): bool
+    {
+        return $this->isVerified();
+    }
+
+    /**
+     * Backwards-compatible alias for `hasPendingCharge()`. Kept
+     * during the migration window.
+     *
+     * @deprecated Use hasPendingCharge() instead.
      */
     public function isPaymentPending(): bool
     {
-        return $this->bdappsSubscriptions()
-            ->where('status', BdappsSubscription::STATUS_PENDING)
-            ->exists();
+        return $this->hasPendingCharge();
     }
 }

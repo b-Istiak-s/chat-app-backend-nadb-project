@@ -5,7 +5,6 @@ namespace App\Http\Controllers\Web;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Web\Auth\StartRequest;
 use App\Http\Requests\Web\Auth\VerifyOtpRequest;
-use App\Models\BdappsSubscription;
 use App\Models\User;
 use App\Services\BdApps\SubscriptionService;
 use Illuminate\Contracts\View\View;
@@ -61,11 +60,15 @@ class WebAuthController extends Controller
         try {
             $user = User::firstOrCreate(
                 ['phone' => $phone],
-                ['subscription_status' => 'unsubscribed'],
+                ['subscription_status' => 'unverified'],
             );
 
-            // Subscribed or pending → trust them; sign them in directly.
-            if ($this->userCanSkipOtp($user)) {
+            // Verified (`subscription_status='pending'`) users skip
+            // OTP entirely — they already hold a Sanctum-token-
+            // equivalent web session. The dashboard renders the
+            // appropriate view (Active / Payment pending) based on
+            // the row mirror.
+            if ($user->isVerified()) {
                 Auth::guard('web')->login($user);
                 $request->session()->forget('web_auth.phone');
                 $request->session()->regenerate();
@@ -80,10 +83,12 @@ class WebAuthController extends Controller
             $referenceNo = $result['reference_no'] ?? null;
 
             if (! $referenceNo) {
-                // Gateway did not issue an OTP but the user is not yet
-                // subscribed — most likely they already hold an active
-                // subscription row. Re-check and sign them in.
-                if ($user->fresh()->isSubscribed()) {
+                // Gateway did not issue an OTP but the user is not
+                // yet verified — most likely they already hold an
+                // active subscription row that flipped their user
+                // status during the start call. Re-check and sign
+                // them in.
+                if ($user->fresh()->isVerified()) {
                     Auth::guard('web')->login($user);
                     $request->session()->regenerate();
 
@@ -134,11 +139,11 @@ class WebAuthController extends Controller
             ]);
         }
 
-        // Soft activation: any non-empty gateway response flips the
-        // user to `subscribed`, so we always sign in. The row's
-        // status (`registered` vs `pending`) drives the dashboard's
-        // "Payment not confirmed" view — the user is signed in either
-        // way.
+        // Token-issuance point: user is now `pending`. Sign in
+        // regardless of whether BDApps confirmed REGISTERED — the
+        // row mirror carries the verdict; the dashboard's branch
+        // logic surfaces the "Payment pending" view when the
+        // mirror is non-`REGISTERED`.
         Auth::guard('web')->login($user);
         $request->session()->forget('web_auth.phone');
         $request->session()->regenerate();
@@ -164,24 +169,5 @@ class WebAuthController extends Controller
             'phone' => $phone,
             'status' => $status,
         ]);
-    }
-
-    /**
-     * Mirror of API AuthController::userCanSkipOtp(). The auth surface
-     * stays open for users we already trust: `subscribed`, or anyone
-     * with a `pending` row whose activation is in flight. The
-     * dashboard's "Payment not confirmed" view (driven by the row's
-     * `status`) gates the *service* surface; this gate decides only
-     * whether the OTP step can be skipped on `start`.
-     */
-    private function userCanSkipOtp(User $user): bool
-    {
-        if ($user->isSubscribed()) {
-            return true;
-        }
-
-        return $user->bdappsSubscriptions()
-            ->where('status', BdappsSubscription::STATUS_PENDING)
-            ->exists();
     }
 }

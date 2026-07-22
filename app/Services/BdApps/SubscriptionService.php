@@ -14,9 +14,28 @@ use Illuminate\Support\Facades\Log;
  * All raw HTTP work lives in BdAppsService; data access goes through
  * BdappsSubscriptionRepository.
  *
- * Every error path writes a structured entry to the dedicated `bdapps`
- * log channel so the full conversation between our backend and the
- * Robi gateway lands in storage/logs/bdapps-YYYY-MM-DD.log.
+ * State machine (three values, used for both row.status and
+ * users.subscription_status):
+ *
+ *   unverified → pending → cancelled
+ *
+ *   - unverified: OTP not yet entered (or the previous session was
+ *     cancelled and the user needs to start over). No token issued.
+ *   - pending: OTP verified by us; the user is signed in and
+ *     receives a Sanctum token. The gateway mirror
+ *     (bdapps_subscriptions.bdapps_subscription_status) carries the
+ *     literal BDApps reply. Once that mirror is "REGISTERED", the
+ *     user has full feature access (chat, APK download). While the
+ *     mirror is anything else (`INITIAL CHARGING PENDING`,
+ *     `CHARGE_PENDING`, `PENDING`), the UI shows "Payment pending".
+ *   - cancelled: terminal. User cancelled, or BDApps returned a
+ *     terminal non-`REGISTERED` status (`UNREGISTERED`/`EXPIRED`).
+ *     No token; next login starts a fresh OTP.
+ *
+ * Every error path writes a structured entry to the dedicated
+ * `bdapps` log channel so the full conversation between our backend
+ * and the Robi gateway lands in
+ * storage/logs/bdapps-YYYY-MM-DD.log.
  */
 class SubscriptionService
 {
@@ -38,8 +57,10 @@ class SubscriptionService
      */
     public function startSubscription(User $user): array
     {
-        // Already active? Skip so we don't double-charge at the gateway.
-        $existing = $this->subscriptions->activeForUser($user->id);
+        // Already verified? Skip so we don't double-charge at the
+        // gateway. The user is signed in (token issued previously);
+        // we just hand the existing row back.
+        $existing = $this->subscriptions->liveForUser($user->id);
         if ($existing) {
             return [
                 'subscription' => $existing,
@@ -50,9 +71,6 @@ class SubscriptionService
         try {
             $otpResult = $this->bdApps->requestOtp($user->phone);
         } catch (BdAppsException $e) {
-            // Gateway rejected the request (e.g. E1312 invalid payload,
-            // E1325 invalid subscriber id). Log structured fields so we
-            // can correlate to the matching bdapps.otp.request entry.
             Log::channel('bdapps')->error('bdapps.subscribe_failed_on_register', [
                 'phone' => $user->phone,
                 'status_code' => $e->statusCode,
@@ -60,9 +78,6 @@ class SubscriptionService
             ]);
             throw $e;
         } catch (ConnectionException $e) {
-            // Transport-level failure (timeout, DNS, TLS, refused).
-            // No reference_no was issued; we don't even create a row —
-            // the next login will retry from scratch.
             Log::channel('bdapps')->error('bdapps.subscribe_failed_on_register', [
                 'phone' => $user->phone,
                 'transport_error' => $e->getMessage(),
@@ -70,17 +85,26 @@ class SubscriptionService
             throw $e;
         }
 
+        // Fresh row at `unverified` — the user must now enter the
+        // OTP. We do NOT optimistically flip the user to `pending`;
+        // that's `verifyOtp()`'s job.
         $subscription = $this->subscriptions->create([
             'user_id' => $user->id,
             'phone' => $user->phone,
             'subscriber_id' => $this->bdApps->formatSubscriberId($user->phone),
-            'status' => BdappsSubscription::STATUS_PENDING,
+            'status' => BdappsSubscription::STATUS_UNVERIFIED,
             'bdapps_subscription_status' => null,
             'reference_no' => $otpResult['reference_no'] ?? null,
             'application_id' => config('bdapps.application_id'),
             'started_at' => now(),
             'raw_otp_request_response' => $otpResult['raw'] ?? null,
         ]);
+
+        if (! $user->isVerified()) {
+            $user->forceFill([
+                'subscription_status' => 'unverified',
+            ])->save();
+        }
 
         return [
             'subscription' => $subscription,
@@ -92,13 +116,15 @@ class SubscriptionService
      * Cancel the user's subscription. Best-effort: a gateway failure
      * doesn't prevent us from marking them inactive locally because
      * the next login will reconcile via getStatus anyway.
+     *
+     * On success, the user lands at `cancelled` and the row at
+     * `cancelled`. The user must complete a fresh OTP to subscribe
+     * again.
      */
     public function cancelSubscription(User $user): BdappsSubscription
     {
         $subscription = $this->subscriptions->latestForUser($user->id);
 
-        // Prefer the gateway-canonical base64 subscriber id when we
-        // have it (more likely to round-trip cleanly on the gateway).
         $gatewaySubscriberId = $subscription?->gateway_subscriber_id;
 
         try {
@@ -106,10 +132,9 @@ class SubscriptionService
 
             if ($subscription) {
                 $this->subscriptions->update($subscription->id, [
-                    'status' => BdappsSubscription::STATUS_UNREGISTERED,
+                    'status' => BdappsSubscription::STATUS_CANCELLED,
                     'bdapps_subscription_status' => $result['subscription_status'] ?? 'UNREGISTERED',
                     'cancelled_at' => now(),
-                    // Refresh the base64 id if the gateway echoed it back.
                     'gateway_subscriber_id' => $result['gateway_subscriber_id']
                         ?? $subscription->gateway_subscriber_id,
                 ]);
@@ -120,7 +145,7 @@ class SubscriptionService
                     'phone' => $user->phone,
                     'subscriber_id' => $this->bdApps->formatSubscriberId($user->phone),
                     'gateway_subscriber_id' => $gatewaySubscriberId,
-                    'status' => BdappsSubscription::STATUS_UNREGISTERED,
+                    'status' => BdappsSubscription::STATUS_CANCELLED,
                     'bdapps_subscription_status' => $result['subscription_status'] ?? 'UNREGISTERED',
                     'cancelled_at' => now(),
                 ]);
@@ -135,7 +160,7 @@ class SubscriptionService
 
             if ($subscription) {
                 $this->subscriptions->update($subscription->id, [
-                    'status' => BdappsSubscription::STATUS_UNREGISTERED,
+                    'status' => BdappsSubscription::STATUS_CANCELLED,
                     'cancelled_at' => now(),
                     'error_code' => 'unsubscribe_failed',
                     'error_message' => $e->getMessage(),
@@ -151,7 +176,7 @@ class SubscriptionService
 
             if ($subscription) {
                 $this->subscriptions->update($subscription->id, [
-                    'status' => BdappsSubscription::STATUS_UNREGISTERED,
+                    'status' => BdappsSubscription::STATUS_CANCELLED,
                     'cancelled_at' => now(),
                     'error_code' => 'unsubscribe_failed',
                     'error_message' => $e->getMessage(),
@@ -161,7 +186,7 @@ class SubscriptionService
         }
 
         $user->forceFill([
-            'subscription_status' => 'unsubscribed',
+            'subscription_status' => 'cancelled',
             'subscribed_at' => null,
         ])->save();
 
@@ -211,23 +236,21 @@ class SubscriptionService
 
     /**
      * Verify the OTP at BDApps and reflect the gateway's verdict
-     * locally. Soft activation: any non-empty gateway response
-     * optimistically flips the user to `subscribed` so the login
-     * flow can issue a bearer and let the user into the app. The
-     * row itself follows the gateway's literal verdict — REGISTERED
-     * stays at `registered`, the "still charging" family
-     * (`INITIAL CHARGING PENDING`, `CHARGE_PENDING`, `PENDING`)
-     * stays at `pending`. The 10-second
-     * `PollSubscriptionStatusJob` (and the cron safety net) reconcile
-     * `pending → registered` once the gateway finalises activation;
-     * until then the user is signed in but the dashboard renders the
-     * "Payment not confirmed" view.
+     * locally. On success the user and the row move from
+     * `unverified` → `pending`. The Sanctum token is issued from
+     * the controller (`AuthController::verify`) immediately after
+     * this method returns — at that point the user is
+     * `subscription_status = 'pending'` and has a token.
      *
-     * Wrong/invalid OTPs come back as a gateway error and are logged
-     * to the bdapps channel.
+     * The row at `pending` carries the literal BDApps reply in the
+     * `bdapps_subscription_status` mirror column. While the mirror
+     * is anything other than `REGISTERED`, the UI shows the
+     * "Payment pending" page; once the mirror flips to
+     * `REGISTERED`, the user has full feature access without any
+     * local-state change.
      *
      * The gateway's base64 `subscriberId` from the response is
-     * persisted as `gateway_subscriber_id` on the row, so future
+     * persisted as `gateway_subscriber_id` on the row so future
      * /subscription/send calls can use the gateway-canonical form.
      */
     public function verifyOtp(User $user, string $otp): array
@@ -256,18 +279,16 @@ class SubscriptionService
         }
 
         $gatewayStatus = strtoupper((string) ($result['subscription_status'] ?? ''));
-        $isRegistered = $gatewayStatus === 'REGISTERED';
-        $isPending = $this->bdApps->isPendingStatus($gatewayStatus);
+        $isTerminalFailure = $this->bdApps->isTerminalFailure($gatewayStatus);
 
-        // Optimistic user-state flip: any non-empty gateway status
-        // means the gateway accepted the verify. The user can sign
-        // in immediately; the *service* surface (chat, APK download)
-        // stays gated until the row itself flips to `registered`.
-        // This is the deliberate "auth surface open, service surface
-        // gated" model — see agents/lessons.md.
-        if ($gatewayStatus !== '') {
+        // Flip the user + row to `pending` whenever the gateway
+        // accepted the OTP (any non-empty status). If the gateway
+        // already returned a terminal-failure status, leave the user
+        // at `unverified` and the row at `unverified` so the next
+        // /auth/start can request a fresh OTP.
+        if ($gatewayStatus !== '' && ! $isTerminalFailure) {
             $user->forceFill([
-                'subscription_status' => 'subscribed',
+                'subscription_status' => 'pending',
                 'subscribed_at' => $user->subscribed_at ?? now(),
                 'phone_verified_at' => now(),
             ])->save();
@@ -280,23 +301,14 @@ class SubscriptionService
         $subscription = $this->subscriptions->latestForUser($user->id);
         if ($subscription) {
             $this->subscriptions->update($subscription->id, [
-                // REGISTERED → fully active. A known pending status
-                // keeps the row at `pending` so the post-verify job
-                // and the cron can reconcile later. Anything else
-                // (UNREGISTERED, unexpected values, transport-style
-                // success without a status field) defaults to
-                // `registered` — the gateway accepted the verify, and
-                // the row staying pending forever would only happen if
-                // we invented a brand-new failure mode that the
-                // gateway hasn't told us about.
-                'status' => $isRegistered
-                    ? BdappsSubscription::STATUS_REGISTERED
-                    : ($isPending
-                        ? BdappsSubscription::STATUS_PENDING
-                        : BdappsSubscription::STATUS_REGISTERED),
+                // Token-bearing state. The row stays at `pending`
+                // regardless of whether the gateway has confirmed
+                // REGISTERED yet; the mirror column records the
+                // literal reply.
+                'status' => BdappsSubscription::STATUS_PENDING,
                 'bdapps_subscription_status' => $gatewayStatus !== ''
                     ? $gatewayStatus
-                    : BdappsSubscription::STATUS_REGISTERED,
+                    : null,
                 'reference_no' => null,
                 'gateway_subscriber_id' => $result['gateway_subscriber_id']
                     ?? $subscription->gateway_subscriber_id,
@@ -312,18 +324,27 @@ class SubscriptionService
      *
      * Called by the 10-second delayed `PollSubscriptionStatusJob`
      * after a successful OTP verify, and by the dashboard's
-     * "Refresh status now" action. Returns the resolved subscription
-     * row.
+     * "Refresh status now" action. Returns the resolved
+     * subscription row.
      *
-     * If the row is no longer pending (e.g. the cron got there first)
-     * the call is a no-op for the gateway but still records the
-     * latest status on the row.
+     * Only meaningful for verified users (i.e. `pending` row). For
+     * `unverified` or `cancelled` rows the call returns early
+     * without hitting the gateway — the queue/cron scoping rule
+     * that "queue and poll run only for pending rows" is enforced
+     * here at the service layer as well.
      */
     public function finalizeActivation(User $user): ?BdappsSubscription
     {
         $subscription = $this->subscriptions->latestForUser($user->id);
         if (! $subscription) {
             return null;
+        }
+
+        // Skip the gateway entirely for non-pending rows. The
+        // 10s per-user job and the cron should not be doing work
+        // for rows that aren't actively awaiting a BDApps verdict.
+        if ($subscription->status !== BdappsSubscription::STATUS_PENDING) {
+            return $subscription;
         }
 
         $gatewaySubscriberId = $subscription->gateway_subscriber_id
@@ -363,16 +384,16 @@ class SubscriptionService
      * Send a courtesy login-notification SMS via BDApps /sms/send.
      *
      * Called from the auth flow when an already-trusted user
-     * (subscribed or has a pending row) skips the OTP step. The SMS
-     * is a pure audit/UX courtesy — the login is already complete by
-     * the time we get here, so we deliberately swallow transport /
-     * gateway failures: a missed SMS should never log the user out
-     * or fail the auth response.
+     * (subscription_status='pending' — token-bearing) skips the OTP
+     * step. The SMS is a pure audit/UX courtesy — the login is
+     * already complete by the time we get here, so we deliberately
+     * swallow transport / gateway failures: a missed SMS should
+     * never log the user out or fail the auth response.
      *
      * If `bdapps.login_sms_notify_enabled` is false (the default),
      * this is a no-op — useful for tests / local dev where we don't
-     * want to spam the gateway. Read via config() (cached) rather than
-     * env() — outside of config loading, env() returns null in
+     * want to spam the gateway. Read via config() (cached) rather
+     * than env() — outside of config loading, env() returns null in
      * production and the gate silently evaluates false.
      */
     public function notifyLogin(User $user): void
@@ -387,10 +408,11 @@ class SubscriptionService
             now()->format('Y-m-d H:i'),
         );
 
-        // Prefer the gateway's own base64 subscriberId (from the user's
-        // latest subscription row). The gateway treats that as canonical
-        // for /sms/send; using a locally-derived `tel:880…` form is a
-        // documented mismatch. Fall back to phone if no row exists.
+        // Prefer the gateway's own base64 subscriberId (from the
+        // user's latest subscription row). The gateway treats that
+        // as canonical for /sms/send; using a locally-derived
+        // `tel:880…` form is a documented mismatch. Fall back to
+        // phone if no row exists.
         $gatewaySubscriberId = $user->bdappsSubscriptions()
             ->orderByDesc('id')
             ->value('gateway_subscriber_id');
@@ -422,42 +444,48 @@ class SubscriptionService
      * latest subscription row and the user. Used by:
      *   - the notify webhook (REGISTERED / UNREGISTERED / EXPIRED)
      *   - the dashboard "Refresh status now" button via
-     *     `finalizeActivation()` (may also see PENDING-family on the
-     *     post-OTP-verify path)
+     *     `finalizeActivation()`
      *   - the 10s per-user PollSubscriptionStatusJob
      *   - the every-minute safety-net cron
      *
-     * Terminal states flip the row and the user. PENDING-family
-     * states (`INITIAL CHARGING PENDING`, `CHARGE_PENDING`, `PENDING`)
-     * are deliberately preserved — `finalizeActivation()` polls the
-     * gateway specifically to wait for them to transition to
-     * REGISTERED, so unsubscribing the user when we *see* a PENDING
-     * reply was the "press refresh → unsubscribe" bug. We only
-     * record the status string and bump `last_notified_at`; row
-     * `status` and `users.subscription_status` stay where they were.
+     * Behaviour:
+     *
+     *   - REGISTERED: row stays at `pending` (token-bearing). The
+     *     mirror column records the literal `"REGISTERED"`. No user
+     *     flip — the user was already at `pending`.
+     *   - PENDING-family (`INITIAL CHARGING PENDING`,
+     *     `CHARGE_PENDING`, `PENDING`): row stays at `pending`;
+     *     mirror column records the literal reply. No user flip.
+     *     This is the bug-fix path from the prior commit — a
+     *     PENDING reply is *not* a cancellation, it's the gateway
+     *     mid-charge.
+     *   - Terminal non-`REGISTERED` (`UNREGISTERED`, `EXPIRED`):
+     *     row → `cancelled`; user → `cancelled`. Sets
+     *     `cancelled_at` if not already set.
      */
     public function applyNotifyStatus(User $user, string $status, ?string $frequency = null): BdappsSubscription
     {
         $normalized = strtoupper($status);
         $isRegistered = $normalized === 'REGISTERED';
         $isPending = $this->bdApps->isPendingStatus($normalized);
+        $isTerminalCancellation = ! $isRegistered && ! $isPending && $normalized !== '';
 
         $subscription = $this->subscriptions->latestForUser($user->id);
 
+        // Row update — keep it alive at `pending` unless the
+        // gateway tells us it's been cancelled.
+        $rowStatus = $isTerminalCancellation
+            ? BdappsSubscription::STATUS_CANCELLED
+            : BdappsSubscription::STATUS_PENDING;
+
         if ($subscription) {
             $this->subscriptions->update($subscription->id, [
-                // PENDING-family: don't touch `status` (still
-                // 'pending'), just record what the gateway said and
-                // bump the notified timestamp so operators can see
-                // when we last heard from the gateway for this row.
-                'status' => $isPending
-                    ? $subscription->status
-                    : ($isRegistered
-                        ? BdappsSubscription::STATUS_REGISTERED
-                        : BdappsSubscription::STATUS_UNREGISTERED),
+                'status' => $rowStatus,
                 'bdapps_subscription_status' => $normalized,
                 'last_notified_at' => now(),
-                'cancelled_at' => $isRegistered ? null : ($subscription->cancelled_at ?? now()),
+                'cancelled_at' => $isTerminalCancellation
+                    ? ($subscription->cancelled_at ?? now())
+                    : null,
             ]);
             $subscription->refresh();
         } else {
@@ -465,30 +493,23 @@ class SubscriptionService
                 'user_id' => $user->id,
                 'phone' => $user->phone,
                 'subscriber_id' => $this->bdApps->formatSubscriberId($user->phone),
-                'status' => $isPending
-                    ? BdappsSubscription::STATUS_PENDING
-                    : ($isRegistered
-                        ? BdappsSubscription::STATUS_REGISTERED
-                        : BdappsSubscription::STATUS_UNREGISTERED),
+                'status' => $rowStatus,
                 'bdapps_subscription_status' => $normalized,
                 'last_notified_at' => now(),
-                'cancelled_at' => $isRegistered ? null : now(),
+                'cancelled_at' => $isTerminalCancellation ? now() : null,
             ]);
         }
 
-        $user->forceFill([
-            // Don't downgrade a user from `subscribed` just because
-            // we got a PENDING reply — they paid, the gateway is just
-            // slow to confirm. The dashboard's `isSubscribed()` gate
-            // already considers both the user flag and the row
-            // status; the per-row column is the real source of truth.
-            'subscription_status' => $isRegistered
-                ? 'subscribed'
-                : ($isPending ? $user->subscription_status : 'unsubscribed'),
-            'subscribed_at' => $isRegistered
-                ? ($user->subscribed_at ?? now())
-                : ($isPending ? $user->subscribed_at : null),
-        ])->save();
+        // User update — only flip to `cancelled` when the gateway
+        // told us this is a terminal cancellation. A PENDING or
+        // REGISTERED reply never changes the user's state; the row
+        // mirror column carries the verdict that the UI reads.
+        if ($isTerminalCancellation) {
+            $user->forceFill([
+                'subscription_status' => 'cancelled',
+                'subscribed_at' => null,
+            ])->save();
+        }
 
         return $subscription;
     }

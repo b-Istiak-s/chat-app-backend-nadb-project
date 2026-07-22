@@ -38,6 +38,20 @@ class BdAppsService
         'PENDING',
     ];
 
+    /**
+     * Gateway statuses that mean the subscription has been
+     * cancelled on the gateway side — `UNREGISTERED`, `EXPIRED`,
+     * and any other non-`REGISTERED` / non-pending-family reply.
+     * Used by the subscription lifecycle to decide whether a
+     * gateway reply should move the local row + user to
+     * `cancelled`. REGISTERED is the success path; PENDING-family
+     * is mid-charge.
+     */
+    public const TERMINAL_FAILURE_STATUSES = [
+        'UNREGISTERED',
+        'EXPIRED',
+    ];
+
     public function __construct() {}
 
     /**
@@ -54,6 +68,37 @@ class BdAppsService
         $upper = strtoupper(trim($status));
 
         return in_array($upper, self::PENDING_STATUSES, true);
+    }
+
+    /**
+     * True when a gateway-reported status means the subscription
+     * has been cancelled on the BDApps side. Covers the explicit
+     * `UNREGISTERED` / `EXPIRED` values plus any other
+     * non-`REGISTERED`, non-pending-family reply (defensive —
+     * catches future gateway variants).
+     *
+     * Empty/null statuses are NOT terminal — they mean "we
+     * haven't heard anything from the gateway", which is
+     * handled separately (the row keeps its current state).
+     */
+    public function isTerminalFailure(?string $status): bool
+    {
+        if ($status === null || $status === '') {
+            return false;
+        }
+
+        $upper = strtoupper(trim($status));
+
+        if (in_array($upper, self::TERMINAL_FAILURE_STATUSES, true)) {
+            return true;
+        }
+
+        // Defensive: any other known-cancellation string from
+        // the gateway is also terminal. REGISTERED is success,
+        // PENDING-family is mid-charge, anything else is
+        // treated as cancellation.
+        return $upper !== 'REGISTERED'
+            && ! in_array($upper, self::PENDING_STATUSES, true);
     }
 
     /**

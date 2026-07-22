@@ -8,13 +8,28 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class BdappsSubscription extends Model
 {
+    /**
+     * OTP not yet entered. Created fresh on `startSubscription()`,
+     * abandoned-mid-flow rows get re-mapped here too (e.g. user
+     * closed the app after submitting their phone but before
+     * entering the OTP).
+     */
+    public const STATUS_UNVERIFIED = 'unverified';
+
+    /**
+     * OTP verified by us. The user has a token and is signed in.
+     * The gateway may still be charging (mirror column carries
+     * the literal `INITIAL CHARGING PENDING` / `REGISTERED` /
+     * whatever). The "live" set.
+     */
     public const STATUS_PENDING = 'pending';
 
-    public const STATUS_REGISTERED = 'registered';
-
-    public const STATUS_UNREGISTERED = 'unregistered';
-
-    public const STATUS_CHARGE_FAILED = 'charge_failed';
+    /**
+     * Terminal: user cancelled OR the gateway returned a terminal
+     * non-`REGISTERED` status (`UNREGISTERED` / `EXPIRED`). No
+     * token-bearing. Next login starts a fresh OTP.
+     */
+    public const STATUS_CANCELLED = 'cancelled';
 
     protected $fillable = [
         'user_id',
@@ -52,9 +67,15 @@ class BdappsSubscription extends Model
         return $this->belongsTo(User::class);
     }
 
-    public function scopeActive(Builder $query): Builder
+    /**
+     * "Live" rows — the user is signed in and the row is awaiting
+     * (or has received) a BDApps verdict. Replaces `scopeActive()`
+     * from the old `registered`-based model. Use this for "is the
+     * user currently paying us?" checks.
+     */
+    public function scopeLive(Builder $query): Builder
     {
-        return $query->where('status', self::STATUS_REGISTERED);
+        return $query->where('status', self::STATUS_PENDING);
     }
 
     public function scopeForUser(Builder $query, int $userId): Builder
@@ -62,8 +83,20 @@ class BdappsSubscription extends Model
         return $query->where('user_id', $userId);
     }
 
+    public function isLive(): bool
+    {
+        return $this->status === self::STATUS_PENDING;
+    }
+
+    /**
+     * Backwards-compatible alias for the old `registered` semantics.
+     * Kept so external callers (and older code paths) keep working
+     * during the migration window. New code should call `isLive()`.
+     *
+     * @deprecated Use isLive() instead.
+     */
     public function isActive(): bool
     {
-        return $this->status === self::STATUS_REGISTERED;
+        return $this->isLive();
     }
 }

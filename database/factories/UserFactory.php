@@ -19,17 +19,19 @@ class UserFactory extends Factory
     {
         return [
             'phone' => '01'.fake()->numerify('########'),
-            'subscription_status' => 'unsubscribed',
+            'subscription_status' => 'unverified',
         ];
     }
 
     /**
-     * Mark the user as subscribed (post OTP verification).
+     * Mark the user as verified (post OTP verification, token
+     * issued). In the new three-state model this is the
+     * token-bearing state — `subscription_status = 'pending'`.
      */
     public function subscribed(): static
     {
         return $this->state(fn (array $attributes) => [
-            'subscription_status' => 'subscribed',
+            'subscription_status' => 'pending',
             'subscribed_at' => now(),
             'phone_verified_at' => now(),
         ]);

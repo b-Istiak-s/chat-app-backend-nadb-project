@@ -46,12 +46,29 @@ class BdappsSubscriptionRepository
             ->first();
     }
 
-    public function activeForUser(int $userId): ?BdappsSubscription
+    /**
+     * The user's most recent live subscription row — i.e. one in
+     * state `pending` (OTP verified by us, awaiting or receiving
+     * BDApps verdict). Replaces `activeForUser()` from the old
+     * `registered` model.
+     */
+    public function liveForUser(int $userId): ?BdappsSubscription
     {
         return BdappsSubscription::where('user_id', $userId)
-            ->where('status', BdappsSubscription::STATUS_REGISTERED)
+            ->where('status', BdappsSubscription::STATUS_PENDING)
             ->orderByDesc('id')
             ->first();
+    }
+
+    /**
+     * Backwards-compatible alias for `liveForUser()` from the
+     * `registered` model. Kept during the migration window.
+     *
+     * @deprecated Use liveForUser() instead.
+     */
+    public function activeForUser(int $userId): ?BdappsSubscription
+    {
+        return $this->liveForUser($userId);
     }
 
     /**
