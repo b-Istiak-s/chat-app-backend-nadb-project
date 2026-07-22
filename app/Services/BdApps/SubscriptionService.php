@@ -418,22 +418,45 @@ class SubscriptionService
     }
 
     /**
-     * Handle an incoming notify webhook. The status field is the
-     * source of truth — we mirror it onto both the user and the
-     * latest subscription row. Idempotent.
+     * Apply a gateway-reported subscription status to both the
+     * latest subscription row and the user. Used by:
+     *   - the notify webhook (REGISTERED / UNREGISTERED / EXPIRED)
+     *   - the dashboard "Refresh status now" button via
+     *     `finalizeActivation()` (may also see PENDING-family on the
+     *     post-OTP-verify path)
+     *   - the 10s per-user PollSubscriptionStatusJob
+     *   - the every-minute safety-net cron
+     *
+     * Terminal states flip the row and the user. PENDING-family
+     * states (`INITIAL CHARGING PENDING`, `CHARGE_PENDING`, `PENDING`)
+     * are deliberately preserved — `finalizeActivation()` polls the
+     * gateway specifically to wait for them to transition to
+     * REGISTERED, so unsubscribing the user when we *see* a PENDING
+     * reply was the "press refresh → unsubscribe" bug. We only
+     * record the status string and bump `last_notified_at`; row
+     * `status` and `users.subscription_status` stay where they were.
      */
     public function applyNotifyStatus(User $user, string $status, ?string $frequency = null): BdappsSubscription
     {
-        $isRegistered = strtoupper($status) === 'REGISTERED';
+        $normalized = strtoupper($status);
+        $isRegistered = $normalized === 'REGISTERED';
+        $isPending = $this->bdApps->isPendingStatus($normalized);
 
         $subscription = $this->subscriptions->latestForUser($user->id);
 
         if ($subscription) {
             $this->subscriptions->update($subscription->id, [
-                'status' => $isRegistered
-                    ? BdappsSubscription::STATUS_REGISTERED
-                    : BdappsSubscription::STATUS_UNREGISTERED,
-                'bdapps_subscription_status' => strtoupper($status),
+                // PENDING-family: don't touch `status` (still
+                // 'pending'), just record what the gateway said and
+                // bump the notified timestamp so operators can see
+                // when we last heard from the gateway for this row.
+                'status' => $isPending
+                    ? $subscription->status
+                    : ($isRegistered
+                        ? BdappsSubscription::STATUS_REGISTERED
+                        : BdappsSubscription::STATUS_UNREGISTERED),
+                'bdapps_subscription_status' => $normalized,
+                'last_notified_at' => now(),
                 'cancelled_at' => $isRegistered ? null : ($subscription->cancelled_at ?? now()),
             ]);
             $subscription->refresh();
@@ -442,19 +465,29 @@ class SubscriptionService
                 'user_id' => $user->id,
                 'phone' => $user->phone,
                 'subscriber_id' => $this->bdApps->formatSubscriberId($user->phone),
-                'status' => $isRegistered
-                    ? BdappsSubscription::STATUS_REGISTERED
-                    : BdappsSubscription::STATUS_UNREGISTERED,
-                'bdapps_subscription_status' => strtoupper($status),
+                'status' => $isPending
+                    ? BdappsSubscription::STATUS_PENDING
+                    : ($isRegistered
+                        ? BdappsSubscription::STATUS_REGISTERED
+                        : BdappsSubscription::STATUS_UNREGISTERED),
+                'bdapps_subscription_status' => $normalized,
+                'last_notified_at' => now(),
                 'cancelled_at' => $isRegistered ? null : now(),
             ]);
         }
 
         $user->forceFill([
-            'subscription_status' => $isRegistered ? 'subscribed' : 'unsubscribed',
+            // Don't downgrade a user from `subscribed` just because
+            // we got a PENDING reply — they paid, the gateway is just
+            // slow to confirm. The dashboard's `isSubscribed()` gate
+            // already considers both the user flag and the row
+            // status; the per-row column is the real source of truth.
+            'subscription_status' => $isRegistered
+                ? 'subscribed'
+                : ($isPending ? $user->subscription_status : 'unsubscribed'),
             'subscribed_at' => $isRegistered
                 ? ($user->subscribed_at ?? now())
-                : null,
+                : ($isPending ? $user->subscribed_at : null),
         ])->save();
 
         return $subscription;
