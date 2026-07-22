@@ -64,7 +64,9 @@ class WebAuthController extends Controller
         }
 
         // If a session already exists, send them on.
-        if (Auth::guard('web')->check() && Auth::guard('web')->user()->isTokenBearing()) {
+        /** @var \App\Models\User|null $existing */
+        $existing = Auth::guard('web')->user();
+        if ($existing && $existing->isTokenBearing()) {
             return redirect()->route('dashboard.index');
         }
 
