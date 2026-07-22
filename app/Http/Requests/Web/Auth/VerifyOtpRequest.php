@@ -14,7 +14,11 @@ class VerifyOtpRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'phone' => ['required', 'string', 'regex:/^01[3-9][0-9]{8}$/'],
+            // `phone` is optional in the web dashboard path —
+            // the controller falls back to `Auth::user()->phone`
+            // when the field is missing. The OTP-form template
+            // never includes a phone input.
+            'phone' => ['sometimes', 'string', 'regex:/^01[3-9][0-9]{8}$/'],
             'otp' => ['required', 'string', 'regex:/^[0-9]{4,6}$/'],
         ];
     }
