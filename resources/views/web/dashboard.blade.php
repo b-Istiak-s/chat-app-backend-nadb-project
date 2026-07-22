@@ -76,17 +76,24 @@
             <div class="pending-head">
                 <div class="pending-spinner" aria-hidden="true"></div>
                 <div>
-                    <span class="badge badge-warning">Awaiting payment confirmation</span>
-                    <h2 style="margin: 8px 0 2px;">Your payment is still pending</h2>
+                    <span class="badge badge-warning">Payment pending</span>
+                    <h2 style="margin: 8px 0 2px;">Payment pending — waiting for confirmation</h2>
                 </div>
             </div>
 
             <p class="muted" style="margin-top: 4px;">
-                We've sent your subscription request to the gateway and they're confirming
-                the payment on their side. This usually finishes within a few seconds.
-                <strong>Please don't close this page.</strong> We'll auto-refresh, or you
-                can press the button below to check now.
+                <strong>Payment not confirmed.</strong> Your subscription is waiting for
+                BDApps to confirm the payment on their side. This usually finishes
+                within a few seconds. Please don't close this page — we'll auto-refresh,
+                or you can press the button below to check now.
             </p>
+
+            <div class="alert" role="alert" style="margin-top: 14px; background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.25); color: #fca5a5;">
+                <strong>Low balance?</strong> If your mobile balance is too low, the
+                gateway can't charge you and this page will keep waiting.
+                <strong>Recharge your account</strong> and press <em>Refresh status now</em>
+                below.
+            </div>
 
             <div class="pending-steps" aria-label="What's happening">
                 <div class="pending-step">
