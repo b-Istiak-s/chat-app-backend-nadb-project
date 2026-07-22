@@ -9,10 +9,10 @@ Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
 
-// Reconcile pending BDApps subscriptions every 5 minutes. Only touches
+// Reconcile pending BDApps subscriptions every minute. Only touches
 // rows whose local `status` is still `pending` — registered and
 // unregistered rows are skipped.
 Schedule::command(PollPendingBdappsSubscriptionsCommand::class)
-    ->everyFiveMinutes()
+    ->everyMinute()
     ->withoutOverlapping(10)
     ->runInBackground();
