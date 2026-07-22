@@ -50,10 +50,21 @@ class WebAuthController extends Controller
 
     public function start(StartRequest $request): View|RedirectResponse
     {
-        $phone = $request->string('phone')->toString();
+        // The dashboard's "Subscribe via OTP" button posts here
+        // with NO phone field — the user is already signed in but
+        // not subscribed (unverified / cancelled). Fall back to
+        // their authenticated phone in that case.
+        $phone = $request->string('phone')->toString()
+            ?: (string) (Auth::guard('web')->user()?->phone ?? '');
+
+        if ($phone === '') {
+            throw ValidationException::withMessages([
+                'phone' => 'Phone number is required.',
+            ]);
+        }
 
         // If a session already exists, send them on.
-        if (Auth::guard('web')->check()) {
+        if (Auth::guard('web')->check() && Auth::guard('web')->user()->isTokenBearing()) {
             return redirect()->route('dashboard.index');
         }
 
@@ -63,12 +74,12 @@ class WebAuthController extends Controller
                 ['subscription_status' => 'unverified'],
             );
 
-            // Verified (`subscription_status='pending'`) users skip
-            // OTP entirely — they already hold a Sanctum-token-
-            // equivalent web session. The dashboard renders the
-            // appropriate view (Active / Payment pending) based on
-            // the row mirror.
-            if ($user->isVerified()) {
+            // Token-bearing users (`pending` or `registered`)
+            // skip OTP entirely — they already hold a
+            // Sanctum-token-equivalent web session. The dashboard
+            // renders the appropriate view based on
+            // `subscription_status`.
+            if ($user->isTokenBearing()) {
                 Auth::guard('web')->login($user);
                 $request->session()->forget('web_auth.phone');
                 $request->session()->regenerate();
@@ -83,12 +94,12 @@ class WebAuthController extends Controller
             $referenceNo = $result['reference_no'] ?? null;
 
             if (! $referenceNo) {
-                // Gateway did not issue an OTP but the user is not
-                // yet verified — most likely they already hold an
-                // active subscription row that flipped their user
-                // status during the start call. Re-check and sign
-                // them in.
-                if ($user->fresh()->isVerified()) {
+                // Gateway did not issue an OTP but the user is
+                // not token-bearing — most likely they already
+                // hold an active subscription row that flipped
+                // their user status during the start call.
+                // Re-check and sign them in.
+                if ($user->fresh()->isTokenBearing()) {
                     Auth::guard('web')->login($user);
                     $request->session()->regenerate();
 
@@ -139,11 +150,11 @@ class WebAuthController extends Controller
             ]);
         }
 
-        // Token-issuance point: user is now `pending`. Sign in
-        // regardless of whether BDApps confirmed REGISTERED — the
-        // row mirror carries the verdict; the dashboard's branch
-        // logic surfaces the "Payment pending" view when the
-        // mirror is non-`REGISTERED`.
+        // Token-issuance point: user is now either `pending`
+        // (BDApps mid-charge) or `registered` (synchronous
+        // REGISTERED reply). Sign in either way; the dashboard
+        // branches on `subscription_status` to render the
+        // correct view.
         Auth::guard('web')->login($user);
         $request->session()->forget('web_auth.phone');
         $request->session()->regenerate();

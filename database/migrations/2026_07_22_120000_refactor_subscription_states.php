@@ -11,16 +11,23 @@ use Illuminate\Support\Facades\Schema;
  *   - users.subscription_status: 'subscribed' | 'unsubscribed'
  *   - bdapps_subscriptions.status: 'pending' | 'registered' | 'unregistered'
  *
- * New model (unified three-state):
+ * New model (unified three-state, prior to the next migration):
  *   - users.subscription_status: 'unverified' | 'pending' | 'cancelled'
  *   - bdapps_subscriptions.status: 'unverified' | 'pending' | 'cancelled'
+ *
+ * Note: a follow-up migration `2026_07_23_120000_add_registered_state.php`
+ * adds `registered` as a fourth state on top of this three-state base.
+ * The `down()` here therefore maps `registered` back to `pending`
+ * (same as the prior three-state treatment) so the four-state
+ * migration's `down()` is a no-op on top of this one.
  *
  * Mapping rules:
  *   - 'subscribed' → 'pending' (token-bearing; OTP verified)
  *   - 'unsubscribed' → 'unverified' (must re-OTP)
  *   - 'registered' (row) → 'pending' (BDApps confirmed; row stays
  *     pending because user still has access; mirror column carries
- *     the literal "REGISTERED")
+ *     the literal "REGISTERED"). The follow-up migration lifts
+ *     these to `registered`.
  *   - 'pending' (row) → split:
  *       - rows that were OTP-in-flight (have reference_no, no mirror
  *         yet) → 'unverified' (we never finished verifying them)
@@ -101,11 +108,17 @@ return new class extends Migration
 
     public function down(): void
     {
-        // Reverse the mapping.
+        // Reverse the mapping. The follow-up `registered` migration
+        // adds a fourth state on top of this one; its `down()` is
+        // expected to run BEFORE this one in any rollback sequence
+        // (i.e. `registered → pending` is its responsibility).
+        // Either way, we treat `registered` like `pending` here as a
+        // belt-and-braces fallback so the rollback is correct even if
+        // the four-state migration is still applied.
         DB::statement("
             UPDATE users
             SET subscription_status = 'subscribed'
-            WHERE subscription_status = 'pending'
+            WHERE subscription_status IN ('pending', 'registered')
         ");
 
         DB::statement("
@@ -117,13 +130,14 @@ return new class extends Migration
         DB::statement("
             UPDATE bdapps_subscriptions
             SET status = 'registered'
-            WHERE status = 'pending' AND bdapps_subscription_status = 'REGISTERED'
+            WHERE status IN ('pending', 'registered')
+              AND bdapps_subscription_status = 'REGISTERED'
         ");
 
         DB::statement("
             UPDATE bdapps_subscriptions
             SET status = 'pending'
-            WHERE status = 'pending'
+            WHERE status IN ('pending', 'registered')
         ");
 
         DB::statement("

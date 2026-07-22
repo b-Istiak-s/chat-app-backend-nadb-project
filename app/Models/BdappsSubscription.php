@@ -18,11 +18,25 @@ class BdappsSubscription extends Model
 
     /**
      * OTP verified by us. The user has a token and is signed in.
-     * The gateway may still be charging (mirror column carries
-     * the literal `INITIAL CHARGING PENDING` / `REGISTERED` /
-     * whatever). The "live" set.
+     * The gateway is still charging — the
+     * `bdapps_subscription_status` mirror column carries the
+     * literal `INITIAL CHARGING PENDING` / `CHARGE_PENDING` /
+     * etc. reply from BDApps. Feature access is locked to
+     * `/payment-not-confirmed` until this row flips to
+     * `registered`.
      */
     public const STATUS_PENDING = 'pending';
+
+    /**
+     * BDApps confirmed `REGISTERED` — money has been taken, the
+     * subscription is fully active. The user has a token AND full
+     * feature access (chat, APK download).
+     *
+     * Transition: only `applyNotifyStatus()` and the synchronous
+     * `verifyOtp()` path move rows here, and only on a literal
+     * `REGISTERED` reply from BDApps.
+     */
+    public const STATUS_REGISTERED = 'registered';
 
     /**
      * Terminal: user cancelled OR the gateway returned a terminal
@@ -68,14 +82,38 @@ class BdappsSubscription extends Model
     }
 
     /**
-     * "Live" rows — the user is signed in and the row is awaiting
-     * (or has received) a BDApps verdict. Replaces `scopeActive()`
-     * from the old `registered`-based model. Use this for "is the
-     * user currently paying us?" checks.
+     * "Live" rows — the user is signed in and holds a token.
+     * Covers both mid-charge (`pending`) and fully-active
+     * (`registered`) rows. Use this when checking "does this user
+     * have a subscription row we should be operating on?" — e.g.
+     * `SubscriptionService::startSubscription()` short-circuits on
+     * a live row to skip re-OTP.
+     *
+     * Strict "mid-charge" filtering (e.g. the cron poll, which
+     * should ignore already-paid rows) should use
+     * `scopePending()` / `scopeChargeable()`.
      */
     public function scopeLive(Builder $query): Builder
     {
+        return $query->whereIn('status', [
+            self::STATUS_PENDING,
+            self::STATUS_REGISTERED,
+        ]);
+    }
+
+    /**
+     * Strict mid-charge filter: only rows awaiting a BDApps verdict.
+     * The cron / per-user poll uses this so that already-`registered`
+     * rows don't get re-pinged.
+     */
+    public function scopePending(Builder $query): Builder
+    {
         return $query->where('status', self::STATUS_PENDING);
+    }
+
+    public function scopeRegistered(Builder $query): Builder
+    {
+        return $query->where('status', self::STATUS_REGISTERED);
     }
 
     public function scopeForUser(Builder $query, int $userId): Builder
@@ -85,7 +123,15 @@ class BdappsSubscription extends Model
 
     public function isLive(): bool
     {
-        return $this->status === self::STATUS_PENDING;
+        return in_array($this->status, [
+            self::STATUS_PENDING,
+            self::STATUS_REGISTERED,
+        ], true);
+    }
+
+    public function isRegistered(): bool
+    {
+        return $this->status === self::STATUS_REGISTERED;
     }
 
     /**

@@ -17,28 +17,32 @@ use Symfony\Component\HttpFoundation\Response;
 
 /**
  * Authenticated dashboard — four screens render from this single
- * template:
+ * template based on the user's `subscription_status`:
  *
- *   - unsubscribed/cancelled → subscribe form (covers both `cancelled`
+ *   - unsubscribed/cancelled → subscribe form (covers `cancelled`
  *                              users and `unverified` users who
  *                              abandoned the OTP step)
- *   - awaiting OTP           → verify form (user has a row at
- *                              `unverified`; surface the OTP field
- *                              to nudge them through)
- *   - Payment pending         → auto-refreshing "Payment pending" view
- *                              (user is `pending` and the latest row
- *                              mirror is non-`REGISTERED`)
- *   - Active                  → APK download + unsubscribe (user is
- *                              `pending` and the latest row mirror is
- *                              `REGISTERED`)
+ *   - awaiting OTP           → verify form (user is `unverified`)
+ *   - Payment pending         → auto-refreshing "Payment pending"
+ *                              view (user is `pending`; BDApps
+ *                              mid-charge, feature access locked)
+ *   - Active                  → APK download + unsubscribe (user
+ *                              is `registered`; full feature
+ *                              access)
+ *
+ * The four states collapse to two binary gates on the controller
+ * side: `$user->isRegistered()` (Active branch) and
+ * `$user->isSubscriptionPending()` (Payment pending branch). The
+ * `unverified` / `cancelled` cases fall through to the awaiting
+ * OTP / Subscribe branches respectively.
  *
  * Every action delegates business work to SubscriptionService; the
  * controller only owns request shaping and the view layer.
  *
- * APK download is gated on `$user->isVerified()` AND the latest row
- * mirror being `REGISTERED`. The artefact lives under
- * `storage/app/public/downloads/` so it is NOT served as a static
- * asset; the only way to fetch it is through `downloadApk()`.
+ * APK download is gated on `$user->isRegistered()`. The artefact
+ * lives under `storage/app/public/downloads/` so it is NOT served
+ * as a static asset; the only way to fetch it is through
+ * `downloadApk()`.
  */
 class DashboardController extends Controller
 {
@@ -57,17 +61,10 @@ class DashboardController extends Controller
 
         $awaitingOtp = (bool) $request->session()->get('web_auth.awaiting_otp');
 
-        // `hasPendingCharge()` is the gate the dashboard uses to
-        // branch between "Payment pending" and Active. It returns
-        // true when the user is verified and the latest row
-        // mirror is anything other than `REGISTERED`.
-        $hasPendingCharge = $user->hasPendingCharge();
-
         return view('web.dashboard', [
             'user' => $user,
             'subscription' => $latestSubscription,
             'awaitingOtp' => $awaitingOtp,
-            'hasPendingCharge' => $hasPendingCharge,
             'refreshSeconds' => (int) config('bdapps.pending_refresh_seconds', 5),
         ]);
     }
@@ -77,18 +74,30 @@ class DashboardController extends Controller
         /** @var User $user */
         $user = Auth::guard('web')->user();
 
+        // Already token-bearing? Don't re-issue OTP — just bounce
+        // them back to the dashboard (the appropriate branch
+        // renders from there).
+        if ($user->isTokenBearing()) {
+            return redirect()
+                ->route('dashboard.index')
+                ->with('status', 'You are already subscribed.');
+        }
+
         try {
             $result = $this->subscriptionService->startSubscription($user);
 
             $referenceNo = $result['reference_no'] ?? null;
 
             if (! $referenceNo) {
-                // No OTP needed — they're already subscribed (or the
-                // gateway skipped the OTP step). Send them back to
-                // the dashboard.
-                return redirect()
-                    ->route('dashboard.index')
-                    ->with('status', 'You are already subscribed.');
+                // Gateway did not issue an OTP. The user might
+                // have been flipped to token-bearing during the
+                // start call (e.g. their row reconciled in the
+                // background). Re-check and bounce them home.
+                if ($user->fresh()->isTokenBearing()) {
+                    return redirect()
+                        ->route('dashboard.index')
+                        ->with('status', 'You are already subscribed.');
+                }
             }
 
             $request->session()->put('web_auth.awaiting_otp', true);
@@ -122,8 +131,8 @@ class DashboardController extends Controller
         $request->session()->forget('web_auth.awaiting_otp');
 
         // Soft activation: the user is signed in either way; the
-        // dashboard's `hasPendingCharge` branch picks the right
-        // view based on the row's mirror status.
+        // dashboard's branch on `subscription_status` picks the
+        // right view (Active / Payment pending).
         return redirect()
             ->route('dashboard.index')
             ->with('status', 'Subscription activated. You can now download the app.');
@@ -146,7 +155,7 @@ class DashboardController extends Controller
 
         $request->session()->forget('web_auth.awaiting_otp');
 
-        if ($user->fresh()->isVerified() && ! $user->fresh()->hasPendingCharge()) {
+        if ($user->fresh()->isRegistered()) {
             return redirect()
                 ->route('dashboard.index')
                 ->with('status', 'Subscription confirmed. You can download the app now.');
@@ -184,7 +193,7 @@ class DashboardController extends Controller
         /** @var User $user */
         $user = Auth::guard('web')->user();
 
-        if (! $user->isVerified() || $user->hasPendingCharge()) {
+        if (! $user->isRegistered()) {
             abort(Response::HTTP_FORBIDDEN, 'Active subscription required to download the app.');
         }
 

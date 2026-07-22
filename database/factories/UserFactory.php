@@ -24,14 +24,29 @@ class UserFactory extends Factory
     }
 
     /**
-     * Mark the user as verified (post OTP verification, token
-     * issued). In the new three-state model this is the
-     * token-bearing state — `subscription_status = 'pending'`.
+     * Mark the user as token-bearing (post OTP verification, BDApps
+     * mid-charge). `subscription_status = 'pending'`. This is the
+     * state the user lands in right after a successful verify when
+     * the gateway hasn't yet confirmed REGISTERED.
      */
     public function subscribed(): static
     {
         return $this->state(fn (array $attributes) => [
             'subscription_status' => 'pending',
+            'subscribed_at' => now(),
+            'phone_verified_at' => now(),
+        ]);
+    }
+
+    /**
+     * Mark the user as fully subscribed — BDApps has confirmed
+     * REGISTERED, money taken, full feature access (chat, APK).
+     * `subscription_status = 'registered'`.
+     */
+    public function registered(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'subscription_status' => 'registered',
             'subscribed_at' => now(),
             'phone_verified_at' => now(),
         ]);

@@ -47,15 +47,19 @@ class BdappsSubscriptionRepository
     }
 
     /**
-     * The user's most recent live subscription row — i.e. one in
-     * state `pending` (OTP verified by us, awaiting or receiving
-     * BDApps verdict). Replaces `activeForUser()` from the old
-     * `registered` model.
+     * The user's most recent live subscription row — covers both
+     * `pending` (OTP verified, BDApps mid-charge) and `registered`
+     * (fully active). Used by `SubscriptionService::startSubscription()`
+     * to short-circuit re-OTP for already-subscribed users.
+     *
+     * For strict mid-charge filtering (e.g. the cron poll, which
+     * must not re-ping already-`registered` rows), use a
+     * `BdappsSubscription::pending()` query directly instead.
      */
     public function liveForUser(int $userId): ?BdappsSubscription
     {
         return BdappsSubscription::where('user_id', $userId)
-            ->where('status', BdappsSubscription::STATUS_PENDING)
+            ->live()
             ->orderByDesc('id')
             ->first();
     }

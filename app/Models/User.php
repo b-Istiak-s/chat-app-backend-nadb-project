@@ -42,26 +42,58 @@ class User extends Authenticatable
     }
 
     /**
-     * Token-bearing user. In the new three-state model this means
-     * the user's `subscription_status` is `pending` — the OTP was
-     * verified by us and they are signed in. The user MAY also have
-     * a BDApps `REGISTERED` mirror (in which case they have full
-     * access), or a PENDING-family mirror (in which case the app
-     * shows the "Payment pending" page).
+     * Phone is confirmed to belong to this user — i.e. the first
+     * OTP was entered successfully. **Decoupled from subscription
+     * state**: a verified user can still be `unverified` /
+     * `pending` / `registered` / `cancelled` from a subscription
+     * perspective. The stamp lives on `phone_verified_at` and is
+     * the source of truth for "is this number owned by this
+     * user?".
      */
     public function isVerified(): bool
+    {
+        return $this->phone_verified_at !== null;
+    }
+
+    /**
+     * Subscription state: OTP not yet entered. No token. Next
+     * `/api/auth/start` requests a fresh OTP.
+     */
+    public function isAwaitingOtp(): bool
+    {
+        return $this->subscription_status === 'unverified';
+    }
+
+    /**
+     * Subscription state: OTP verified by us, BDApps is still
+     * charging. The user has a token but feature access is
+     * locked — the app shows the "Payment pending" page until
+     * the row flips to `registered`.
+     */
+    public function isSubscriptionPending(): bool
     {
         return $this->subscription_status === 'pending';
     }
 
     /**
-     * User has not yet entered the OTP (or their previous session
-     * was cancelled). They cannot get a Sanctum token; the next
-     * `/api/auth/start` will request a fresh OTP.
+     * Subscription state: BDApps confirmed `REGISTERED`, money
+     * taken. The user has a token AND full feature access (chat,
+     * APK download).
      */
-    public function isAwaitingOtp(): bool
+    public function isRegistered(): bool
     {
-        return $this->subscription_status === 'unverified';
+        return $this->subscription_status === 'registered';
+    }
+
+    /**
+     * True when the user holds a token — covers both `pending`
+     * (mid-charge) and `registered` (fully active). This is the
+     * "should `/api/auth/start` short-circuit without sending an
+     * OTP?" check used by `AuthController::userHasValidToken()`.
+     */
+    public function isTokenBearing(): bool
+    {
+        return $this->isSubscriptionPending() || $this->isRegistered();
     }
 
     /**
@@ -75,10 +107,20 @@ class User extends Authenticatable
     }
 
     /**
-     * The user's most recent subscription row — used by the
-     * dashboard and the app router to read the gateway mirror
-     * (`bdapps_subscription_status`) and decide whether to render
-     * chat or the "Payment pending" page.
+     * True when the user has full feature access — i.e. they are
+     * `registered`. The dashboard / router / `downloadApk()` gate
+     * all use this.
+     */
+    public function isFullySubscribed(): bool
+    {
+        return $this->isRegistered();
+    }
+
+    /**
+     * The user's most recent subscription row. Used by the
+     * dashboard view to read the gateway mirror column
+     * (`bdapps_subscription_status`) for display only — the
+     * mirror is no longer the source of truth for feature gating.
      */
     public function latestSubscription(): ?BdappsSubscription
     {
@@ -86,42 +128,16 @@ class User extends Authenticatable
     }
 
     /**
-     * True when the user is verified (`pending`) AND the latest
-     * gateway mirror is non-`REGISTERED` — i.e. BDApps is still
-     * mid-charge. The dashboard renders the "Payment pending" view
-     * for this case. Replaces the old `isPaymentPending()` helper
-     * from the previous model.
-     */
-    public function hasPendingCharge(): bool
-    {
-        if (! $this->isVerified()) {
-            return false;
-        }
-
-        $mirror = (string) ($this->latestSubscription()?->bdapps_subscription_status ?? '');
-
-        return $mirror !== '' && $mirror !== 'REGISTERED';
-    }
-
-    /**
-     * Backwards-compatible alias for `isVerified()`. Kept during
-     * the migration window so existing call sites keep working.
+     * Backwards-compatible alias for `isRegistered()`. The old
+     * model conflated "subscribed" with "token-bearing"; now
+     * `subscribed` means "fully subscribed" (i.e. registered).
+     * Kept during the migration window so existing call sites
+     * compile.
      *
-     * @deprecated Use isVerified() instead.
+     * @deprecated Use isRegistered() instead.
      */
     public function isSubscribed(): bool
     {
-        return $this->isVerified();
-    }
-
-    /**
-     * Backwards-compatible alias for `hasPendingCharge()`. Kept
-     * during the migration window.
-     *
-     * @deprecated Use hasPendingCharge() instead.
-     */
-    public function isPaymentPending(): bool
-    {
-        return $this->hasPendingCharge();
+        return $this->isRegistered();
     }
 }

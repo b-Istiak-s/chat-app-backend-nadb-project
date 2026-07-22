@@ -14,7 +14,13 @@ class StartRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'phone' => ['required', 'string', 'regex:/^01[3-9][0-9]{8}$/'],
+            // `sometimes` lets the dashboard's "Subscribe via OTP"
+            // button POST without a phone field — the controller
+            // falls back to `Auth::user()->phone` for the
+            // signed-in-but-not-subscribed path. The regex still
+            // validates the format when the field IS supplied
+            // (e.g. /login/start).
+            'phone' => ['sometimes', 'string', 'regex:/^01[3-9][0-9]{8}$/'],
         ];
     }
 

@@ -8,9 +8,9 @@
                 You're signed in as <strong>+880{{ $user->phone }}</strong>.
             </p>
 
-            @if ($user->isVerified() && ! $hasPendingCharge)
+            @if ($user->isRegistered())
                 <span class="badge badge-success">Active</span>
-            @elseif ($user->isVerified() && $hasPendingCharge)
+            @elseif ($user->isSubscriptionPending())
                 <span class="badge badge-warning">Payment pending</span>
             @elseif ($awaitingOtp || $user->isAwaitingOtp())
                 <span class="badge badge-warning">Awaiting OTP</span>
@@ -20,8 +20,8 @@
         </div>
     </div>
 
-    {{-- ────────────────────────── Active subscription ────────────────────────── --}}
-    @if ($user->isVerified() && ! $hasPendingCharge)
+    {{-- ──────────────────────────── Active (registered) ──────────────────────────── --}}
+    @if ($user->isRegistered())
         <div class="card">
             <h2>Download the ChatApp</h2>
             <p class="muted">
@@ -59,13 +59,15 @@
             </div>
         </div>
 
-    {{-- ──────────────────────────── Payment pending (post-verify) ─────────────────────────── --}}
-    @elseif ($user->isVerified() && $hasPendingCharge)
-        {{-- Auto-refresh while the 10s job + cron reconcile. Meta-refresh
-             keeps the page no-JS and survives the user closing the tab
-             then reopening. The user is signed in but the gateway has
-             not yet taken the money — they see this view. The APK
-             download is gated (it's inside the Active branch above). --}}
+    {{-- ──────────────────────────── Payment pending ─────────────────────────── --}}
+    @elseif ($user->isSubscriptionPending())
+        {{-- Auto-refresh while the per-user job + cron reconcile.
+             Meta-refresh keeps the page no-JS and survives the user
+             closing the tab then reopening. The user is signed in
+             but BDApps hasn't yet taken the money — they see this
+             view until `applyNotifyStatus()` flips the row to
+             `registered`. The APK download is gated (it's inside
+             the Active branch above). --}}
         <meta http-equiv="refresh" content="{{ $refreshSeconds }}">
 
         <div class="card pending">
