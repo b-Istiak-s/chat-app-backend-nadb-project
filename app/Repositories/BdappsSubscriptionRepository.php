@@ -23,6 +23,22 @@ class BdappsSubscriptionRepository
         return BdappsSubscription::where('subscriber_id', $subscriberId)->first();
     }
 
+    /**
+     * Look up a subscription by the gateway-canonical base64
+     * `subscriberId` (persisted on the row as
+     * `gateway_subscriber_id`). The gateway returns this masked value
+     * in two places: the /otp/verify response, and incoming notify
+     * webhooks. Matching it directly is the only way to correlate a
+     * masked webhook payload back to the subscription row — we have
+     * no way to "unmask" the base64 string back into a phone number
+     * on our side, and attempting to do so produces the kind of
+     * nonsense logged by `bdapps.notify_unknown_phone`.
+     */
+    public function findByGatewaySubscriberId(string $gatewaySubscriberId): ?BdappsSubscription
+    {
+        return BdappsSubscription::where('gateway_subscriber_id', $gatewaySubscriberId)->first();
+    }
+
     public function latestForUser(int $userId): ?BdappsSubscription
     {
         return BdappsSubscription::where('user_id', $userId)

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Webhook;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Repositories\BdappsSubscriptionRepository;
 use App\Services\BdApps\BdAppsService;
 use App\Services\BdApps\SubscriptionService;
 use Illuminate\Http\JsonResponse;
@@ -52,6 +53,7 @@ class BdAppsNotifyController extends Controller
     public function __construct(
         private SubscriptionService $subscriptionService,
         private BdAppsService $bdApps,
+        private BdappsSubscriptionRepository $subscriptions,
     ) {}
 
     public function handle(Request $request): JsonResponse
@@ -121,12 +123,40 @@ class BdAppsNotifyController extends Controller
 
         $user = User::where('phone', $phone)->first();
         if (! $user) {
-            // Unknown phone — BDApps might notify us about a number
-            // that unsubscribed before completing registration.
+            // No matching local user. Try resolving directly by the
+            // gateway-canonical subscriberId delivered in the webhook.
+            // The BDApps gateway posts the masked base64 form
+            // (`Njg1OGQ2...`) WITHOUT the `tel:` prefix; that string
+            // is the same `gateway_subscriber_id` we persisted from
+            // the matching /otp/verify response. Extracting a local
+            // phone from it via `extractLocalPhone()` would yield
+            // nonsense digits (the base64 alphabet contains digits
+            // too), so we use the raw value as the lookup key. When
+            // the value does come prefixed, keep it as-is — the
+            // repository lookup expects the exact stored form.
+            $lookupKey = str_starts_with($subscriberId, 'tel:')
+                ? $subscriberId
+                : 'tel:'.$subscriberId;
+
+            $subscription = $this->subscriptions->findByGatewaySubscriberId($lookupKey)
+                ?? $this->subscriptions->findBySubscriberId(
+                    $this->bdApps->formatSubscriberId($subscriberId)
+                );
+
+            if ($subscription) {
+                $subscription->loadMissing('user');
+                $user = $subscription->user;
+            }
+        }
+
+        if (! $user) {
+            // Unknown — BDApps might notify us about a number that
+            // unsubscribed before completing registration, or a row
+            // whose gateway_subscriber_id we never captured locally.
             // Acknowledge anyway so BDApps doesn't retry forever.
-            Log::channel('bdapps')->info('bdapps.notify_unknown_phone', [
-                'phone' => $phone,
+            Log::channel('bdapps')->info('bdapps.notify_unknown_subscriber', [
                 'subscriberId' => $subscriberId,
+                'extracted_phone' => $phone,
             ]);
 
             return response()->json([
@@ -139,7 +169,7 @@ class BdAppsNotifyController extends Controller
 
         Log::channel('bdapps')->info('bdapps.notify_applied', [
             'user_id' => $user->id,
-            'phone' => $phone,
+            'phone' => $user->phone,
             'subscriberId' => $subscriberId,
             'status' => $status,
             'frequency' => $frequency,
