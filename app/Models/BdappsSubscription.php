@@ -42,8 +42,11 @@ class BdappsSubscription extends Model
      * Terminal: user cancelled OR the gateway returned a terminal
      * non-`REGISTERED` status (`UNREGISTERED` / `EXPIRED`). No
      * token-bearing. Next login starts a fresh OTP.
+     *
+     * Renamed from the older `cancelled` value to align with the
+     * gateway's literal `UNREGISTERED` reply.
      */
-    public const STATUS_CANCELLED = 'cancelled';
+    public const STATUS_UNREGISTERED = 'unregistered';
 
     protected $fillable = [
         'user_id',
@@ -132,6 +135,11 @@ class BdappsSubscription extends Model
     public function isRegistered(): bool
     {
         return $this->status === self::STATUS_REGISTERED;
+    }
+
+    public function isUnregistered(): bool
+    {
+        return $this->status === self::STATUS_UNREGISTERED;
     }
 
     /**

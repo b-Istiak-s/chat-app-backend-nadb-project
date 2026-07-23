@@ -30,7 +30,7 @@ use Symfony\Component\HttpFoundation\Response;
  *     `is_verified` (first-OTP event).
  *   - logout(): revoke current Sanctum token.
  *   - unsubscribe(): cancel BDApps subscription; user + row
- *     move to `cancelled`.
+ *     move to `unregistered`.
  */
 class AuthController extends Controller
 {
@@ -154,7 +154,7 @@ class AuthController extends Controller
             return $this->sendSuccessResponse([
                 'subscription_status' => $subscription->status,
                 'is_subscribed' => false,
-            ], 'Subscription cancelled.');
+            ], 'Subscription unregistered.');
         } catch (\Throwable $e) {
             return $this->handleError($e);
         }

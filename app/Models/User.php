@@ -45,7 +45,7 @@ class User extends Authenticatable
      * Phone is confirmed to belong to this user — i.e. the first
      * OTP was entered successfully. **Decoupled from subscription
      * state**: a verified user can still be `unverified` /
-     * `pending` / `registered` / `cancelled` from a subscription
+     * `pending` / `registered` / `unregistered` from a subscription
      * perspective. The stamp lives on `phone_verified_at` and is
      * the source of truth for "is this number owned by this
      * user?".
@@ -101,9 +101,9 @@ class User extends Authenticatable
      * non-`REGISTERED` terminal status. No token; the next login
      * starts a fresh OTP.
      */
-    public function isCancelled(): bool
+    public function isUnregistered(): bool
     {
-        return $this->subscription_status === 'cancelled';
+        return $this->subscription_status === 'unregistered';
     }
 
     /**

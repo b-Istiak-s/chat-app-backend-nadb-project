@@ -176,11 +176,11 @@
             </form>
         </div>
 
-    {{-- ────────────────────────── Cancelled or fresh ────────────────────────── --}}
+    {{-- ────────────────────────── Unregistered or fresh ────────────────────────── --}}
     @else
         <div class="card">
-            @if ($user->isCancelled())
-                <h2>Your previous subscription was cancelled</h2>
+            @if ($user->isUnregistered())
+                <h2>Your previous subscription was unregistered</h2>
                 <p class="muted">
                     You can re-subscribe below — we'll send a fresh OTP to your phone.
                 </p>
@@ -196,7 +196,7 @@
                 @csrf
                 <div class="actions">
                     <button type="submit" class="btn btn-primary">
-                        {{ $user->isCancelled() ? 'Re-subscribe via OTP' : 'Subscribe via OTP' }}
+                        {{ $user->isUnregistered() ? 'Re-subscribe via OTP' : 'Subscribe via OTP' }}
                     </button>
                 </div>
             </form>

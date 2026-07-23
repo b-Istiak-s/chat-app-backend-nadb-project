@@ -19,10 +19,10 @@ use Illuminate\Support\Facades\Log;
  *
  *   unverified → pending → registered
  *                     ↘
- *                     cancelled
+ *                     unregistered (was: cancelled)
  *
  *   - unverified: OTP not yet entered (or the previous session was
- *     cancelled and the user needs to start over). No token issued.
+ *     unregistered and the user needs to start over). No token issued.
  *   - pending: OTP verified by us; the user is signed in and
  *     receives a Sanctum token. The gateway is still charging —
  *     `bdapps_subscriptions.bdapps_subscription_status` carries
@@ -32,9 +32,10 @@ use Illuminate\Support\Facades\Log;
  *   - registered: BDApps confirmed `REGISTERED`. The user has
  *     full feature access (chat, APK download). This is the only
  *     `isFullySubscribed()` state.
- *   - cancelled: terminal. User cancelled, or BDApps returned a
- *     terminal non-`REGISTERED` status (`UNREGISTERED`/`EXPIRED`).
- *     No token; next login starts a fresh OTP.
+ *   - unregistered: terminal. User cancelled, or BDApps returned
+ *     a terminal non-`REGISTERED` status
+ *     (`UNREGISTERED`/`EXPIRED`). No token; next login starts a
+ *     fresh OTP.
  *
  * Transition `pending → registered` happens exactly once via
  * `applyNotifyStatus()` (webhook, per-user poll, or safety-net
@@ -132,8 +133,8 @@ class SubscriptionService
      * doesn't prevent us from marking them inactive locally because
      * the next login will reconcile via getStatus anyway.
      *
-     * On success, the user lands at `cancelled` and the row at
-     * `cancelled`. The user must complete a fresh OTP to subscribe
+     * On success, the user lands at `unregistered` and the row at
+     * `unregistered`. The user must complete a fresh OTP to subscribe
      * again.
      */
     public function cancelSubscription(User $user): BdappsSubscription
@@ -147,7 +148,7 @@ class SubscriptionService
 
             if ($subscription) {
                 $this->subscriptions->update($subscription->id, [
-                    'status' => BdappsSubscription::STATUS_CANCELLED,
+                    'status' => BdappsSubscription::STATUS_UNREGISTERED,
                     'bdapps_subscription_status' => $result['subscription_status'] ?? 'UNREGISTERED',
                     'cancelled_at' => now(),
                     'gateway_subscriber_id' => $result['gateway_subscriber_id']
@@ -160,7 +161,7 @@ class SubscriptionService
                     'phone' => $user->phone,
                     'subscriber_id' => $this->bdApps->formatSubscriberId($user->phone),
                     'gateway_subscriber_id' => $gatewaySubscriberId,
-                    'status' => BdappsSubscription::STATUS_CANCELLED,
+                    'status' => BdappsSubscription::STATUS_UNREGISTERED,
                     'bdapps_subscription_status' => $result['subscription_status'] ?? 'UNREGISTERED',
                     'cancelled_at' => now(),
                 ]);
@@ -175,7 +176,7 @@ class SubscriptionService
 
             if ($subscription) {
                 $this->subscriptions->update($subscription->id, [
-                    'status' => BdappsSubscription::STATUS_CANCELLED,
+                    'status' => BdappsSubscription::STATUS_UNREGISTERED,
                     'cancelled_at' => now(),
                     'error_code' => 'unsubscribe_failed',
                     'error_message' => $e->getMessage(),
@@ -191,7 +192,7 @@ class SubscriptionService
 
             if ($subscription) {
                 $this->subscriptions->update($subscription->id, [
-                    'status' => BdappsSubscription::STATUS_CANCELLED,
+                    'status' => BdappsSubscription::STATUS_UNREGISTERED,
                     'cancelled_at' => now(),
                     'error_code' => 'unsubscribe_failed',
                     'error_message' => $e->getMessage(),
@@ -201,7 +202,7 @@ class SubscriptionService
         }
 
         $user->forceFill([
-            'subscription_status' => 'cancelled',
+            'subscription_status' => 'unregistered',
             'subscribed_at' => null,
         ])->save();
 
@@ -267,7 +268,7 @@ class SubscriptionService
      * `pending` or `registered` by then.
      *
      * On terminal-failure (`UNREGISTERED`/`EXPIRED`), the user
-     * and row stay at `unverified` — the next `/auth/start`
+     * and row land at `unregistered` — the next `/auth/start`
      * triggers a fresh OTP.
      *
      * The gateway's base64 `subscriberId` from the response is
@@ -350,7 +351,7 @@ class SubscriptionService
      * subscription row.
      *
      * Only meaningful for verified users (i.e. `pending` row). For
-     * `unverified` or `cancelled` rows the call returns early
+     * `unverified` or `unregistered` rows the call returns early
      * without hitting the gateway — the queue/cron scoping rule
      * that "queue and poll run only for pending rows" is enforced
      * here at the service layer as well.
@@ -480,7 +481,7 @@ class SubscriptionService
      *     Feature access still locked — the UI shows "Payment
      *     pending".
      *   - Terminal non-`REGISTERED` (`UNREGISTERED`, `EXPIRED`):
-     *     row → `cancelled`; user → `cancelled`. Sets
+     *     row → `unregistered`; user → `unregistered`. Sets
      *     `cancelled_at` if not already set. Next login triggers
      *     a fresh OTP.
      */
@@ -494,12 +495,12 @@ class SubscriptionService
         $subscription = $this->subscriptions->latestForUser($user->id);
 
         // Row update: REGISTERED → 'registered'; terminal →
-        // 'cancelled'; otherwise stay at 'pending'. The mirror
+        // 'unregistered'; otherwise stay at 'pending'. The mirror
         // column records the literal reply for forensics / display.
         $rowStatus = $isRegistered
             ? BdappsSubscription::STATUS_REGISTERED
             : ($isTerminalCancellation
-                ? BdappsSubscription::STATUS_CANCELLED
+                ? BdappsSubscription::STATUS_UNREGISTERED
                 : BdappsSubscription::STATUS_PENDING);
 
         if ($subscription) {
@@ -525,7 +526,7 @@ class SubscriptionService
         }
 
         // User update — flips to `registered` on a REGISTERED reply
-        // and to `cancelled` on a terminal reply. PENDING-family
+        // and to `unregistered` on a terminal reply. PENDING-family
         // replies are no-ops for the user (they were already at
         // `pending`).
         if ($isRegistered) {
@@ -534,7 +535,7 @@ class SubscriptionService
             ])->save();
         } elseif ($isTerminalCancellation) {
             $user->forceFill([
-                'subscription_status' => 'cancelled',
+                'subscription_status' => 'unregistered',
                 'subscribed_at' => null,
             ])->save();
         }

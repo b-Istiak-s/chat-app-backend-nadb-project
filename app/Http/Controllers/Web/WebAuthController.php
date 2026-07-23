@@ -52,7 +52,7 @@ class WebAuthController extends Controller
     {
         // The dashboard's "Subscribe via OTP" button posts here
         // with NO phone field — the user is already signed in but
-        // not subscribed (unverified / cancelled). Fall back to
+        // not subscribed (unverified / unregistered). Fall back to
         // their authenticated phone in that case.
         $phone = $request->string('phone')->toString()
             ?: (string) (Auth::guard('web')->user()?->phone ?? '');

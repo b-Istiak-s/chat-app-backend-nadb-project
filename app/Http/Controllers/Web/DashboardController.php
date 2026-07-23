@@ -19,7 +19,7 @@ use Symfony\Component\HttpFoundation\Response;
  * Authenticated dashboard — four screens render from this single
  * template based on the user's `subscription_status`:
  *
- *   - unsubscribed/cancelled → subscribe form (covers `cancelled`
+ *   - unsubscribed/unregistered → subscribe form (covers `unregistered`
  *                              users and `unverified` users who
  *                              abandoned the OTP step)
  *   - awaiting OTP           → verify form (user is `unverified`)
@@ -33,7 +33,7 @@ use Symfony\Component\HttpFoundation\Response;
  * The four states collapse to two binary gates on the controller
  * side: `$user->isRegistered()` (Active branch) and
  * `$user->isSubscriptionPending()` (Payment pending branch). The
- * `unverified` / `cancelled` cases fall through to the awaiting
+ * `unverified` / `unregistered` cases fall through to the awaiting
  * OTP / Subscribe branches respectively.
  *
  * Every action delegates business work to SubscriptionService; the
@@ -185,7 +185,7 @@ class DashboardController extends Controller
 
         return redirect()
             ->route('dashboard.index')
-            ->with('status', 'Subscription cancelled. You can re-subscribe at any time.');
+            ->with('status', 'Subscription unregistered. You can re-subscribe at any time.');
     }
 
     public function downloadApk(Request $request): BinaryFileResponse
