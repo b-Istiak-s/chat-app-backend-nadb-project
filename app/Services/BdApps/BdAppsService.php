@@ -41,15 +41,24 @@ class BdAppsService
     /**
      * Gateway statuses that mean the subscription has been
      * cancelled on the gateway side — `UNREGISTERED`, `EXPIRED`,
-     * and any other non-`REGISTERED` / non-pending-family reply.
+     * `TEMPORARY BLOCKED`, and any other non-`REGISTERED` /
+     * non-pending-family reply.
+     *
+     * `TEMPORARY BLOCKED` is operator-applied (BDApps holds the
+     * line: re-charge blocked for a window before retry). From
+     * our side it behaves like `UNREGISTERED`: row goes to
+     * `unregistered`, no token issued, next `/auth/start` will
+     * see whether the gateway has unblocked yet.
+     *
      * Used by the subscription lifecycle to decide whether a
      * gateway reply should move the local row + user to
-     * `cancelled`. REGISTERED is the success path; PENDING-family
-     * is mid-charge.
+     * `unregistered`. REGISTERED is the success path;
+     * PENDING-family is mid-charge.
      */
     public const TERMINAL_FAILURE_STATUSES = [
         'UNREGISTERED',
         'EXPIRED',
+        'TEMPORARY BLOCKED',
     ];
 
     public function __construct() {}
@@ -99,6 +108,25 @@ class BdAppsService
         // treated as cancellation.
         return $upper !== 'REGISTERED'
             && ! in_array($upper, self::PENDING_STATUSES, true);
+    }
+
+    /**
+     * True when the gateway returned the operator-applied
+     * `TEMPORARY BLOCKED` status. Distinct from a clean
+     * `UNREGISTERED` because the line is expected to unblock
+     * — calling this out separately lets the UI / logs surface
+     * "subscription is paused by the operator, try again later"
+     * instead of a generic "subscription cancelled" copy.
+     *
+     * Match is case-insensitive. Null/empty returns false.
+     */
+    public function isTemporaryBlocked(?string $status): bool
+    {
+        if ($status === null || $status === '') {
+            return false;
+        }
+
+        return strtoupper(trim($status)) === 'TEMPORARY BLOCKED';
     }
 
     /**

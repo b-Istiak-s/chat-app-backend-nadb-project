@@ -267,9 +267,10 @@ class SubscriptionService
      * this method returns; the user is in `subscription_status`
      * `pending` or `registered` by then.
      *
-     * On terminal-failure (`UNREGISTERED`/`EXPIRED`), the user
-     * and row land at `unregistered` — the next `/auth/start`
-     * triggers a fresh OTP.
+     * On terminal-failure (`UNREGISTERED`/`EXPIRED`/
+     * `TEMPORARY BLOCKED`), the user and row land at
+     * `unregistered` — the next `/auth/start` triggers a fresh
+     * OTP, which the gateway will refuse until it unblocks.
      *
      * The gateway's base64 `subscriberId` from the response is
      * persisted as `gateway_subscriber_id` on the row so future
@@ -309,12 +310,27 @@ class SubscriptionService
         // outcome. If the gateway accepted the OTP (non-terminal),
         // flip the subscription state — straight to `registered`
         // on a synchronous REGISTERED, otherwise to `pending`.
+        //
+        // Terminal replies (UNREGISTERED, EXPIRED, TEMPORARY
+        // BLOCKED) only stamp `phone_verified_at` and move the
+        // user to `unregistered`: no token is issued, the next
+        // `/auth/start` will retry once the gateway is willing.
         if ($gatewayStatus !== '' && ! $isTerminalFailure) {
             $newState = $isRegistered ? 'registered' : 'pending';
 
             $user->forceFill([
                 'subscription_status' => $newState,
                 'subscribed_at' => $user->subscribed_at ?? now(),
+                'phone_verified_at' => now(),
+            ])->save();
+        } elseif ($isTerminalFailure) {
+            // Terminal reply on verify — user has proven the
+            // phone is theirs (OTP entered) but the gateway
+            // refused to charge. Stamp verification, move to
+            // `unregistered`, clear any prior subscribed_at.
+            $user->forceFill([
+                'subscription_status' => 'unregistered',
+                'subscribed_at' => null,
                 'phone_verified_at' => now(),
             ])->save();
         } else {
@@ -325,16 +341,29 @@ class SubscriptionService
 
         $subscription = $this->subscriptions->latestForUser($user->id);
         if ($subscription) {
+            // Row-side: terminal reply → `unregistered` (with
+            // cancelled_at stamped so the next login skips the
+            // OTP until the gateway unblocks). The BDApps mirror
+            // column records the literal gateway status for
+            // forensics — including `TEMPORARY BLOCKED` so the
+            // dashboard can show "paused by operator" copy.
+            $rowStatus = $isRegistered
+                ? BdappsSubscription::STATUS_REGISTERED
+                : ($isTerminalFailure
+                    ? BdappsSubscription::STATUS_UNREGISTERED
+                    : BdappsSubscription::STATUS_PENDING);
+
             $this->subscriptions->update($subscription->id, [
-                'status' => $isRegistered
-                    ? BdappsSubscription::STATUS_REGISTERED
-                    : BdappsSubscription::STATUS_PENDING,
+                'status' => $rowStatus,
                 'bdapps_subscription_status' => $gatewayStatus !== ''
                     ? $gatewayStatus
                     : null,
                 'reference_no' => null,
                 'gateway_subscriber_id' => $result['gateway_subscriber_id']
                     ?? $subscription->gateway_subscriber_id,
+                'cancelled_at' => $isTerminalFailure
+                    ? ($subscription->cancelled_at ?? now())
+                    : null,
             ]);
         }
 
