@@ -49,16 +49,39 @@ curl \
 }
 ```
 
+## Sample `TEMPORARY BLOCKED` response
+
+When the gateway accepts the OTP but the operator has blocked
+the line:
+
+```json
+{
+  "subscriptionStatus": "TEMPORARY BLOCKED",
+  "statusCode": "S1000",
+  "statusDetail": "Success",
+  "subscriberId": "tel:8801812345678",
+  "version": "1.0"
+}
+```
+
+We treat this like `UNREGISTERED` — row + user land at
+`unregistered`, no token is issued.
+
 ## Status code matrix
 
 | statusCode | meaning |
 |---|---|
-| `S1000` | OTP valid; `subscriptionStatus: REGISTERED` |
+| `S1000` | OTP valid; check `subscriptionStatus` — `REGISTERED`, `TEMPORARY BLOCKED`, etc. |
 | `E1325` | OTP wrong or expired |
 
 ## Implementation
 
 - Service: `app/Services/BdApps/BdAppsService.php` (`verifyOtp()`).
 - Caller: `app/Services/BdApps/SubscriptionService.php` (`verifyOtp()`).
-- On `S1000` we set the user's `subscription_status` to `subscribed`
-  and stamp `subscribed_at` and `phone_verified_at`.
+- On `S1000` with `REGISTERED` → user → `registered`,
+  `subscribed_at` and `phone_verified_at` stamped.
+- On `S1000` with PENDING-family → user → `pending`,
+  `phone_verified_at` stamped.
+- On `S1000` with `UNREGISTERED` / `EXPIRED` /
+  `TEMPORARY BLOCKED` → user → `unregistered`,
+  `phone_verified_at` stamped but no token issued.

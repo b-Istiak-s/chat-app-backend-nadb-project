@@ -48,15 +48,35 @@ For an unregistered subscriber:
 }
 ```
 
+For an operator-temporarily-blocked subscriber:
+
+```json
+{
+  "subscriptionStatus": "TEMPORARY BLOCKED",
+  "statusCode": "S1000",
+  "statusDetail": "Success",
+  "version": "1.0"
+}
+```
+
+`TEMPORARY BLOCKED` is operator-applied: BDApps refuses to
+charge the subscriber for a window. From our side it behaves
+like `UNREGISTERED` — row + user land at `unregistered`, no
+token issued, the next `/auth/start` will see whether the
+gateway has unblocked yet.
+
 ## Status code matrix
 
 | statusCode | meaning |
 |---|---|
 | `S1000` | Transport OK — check `subscriptionStatus` for the answer |
 
-Note: per `getStatus` contract, an `UNREGISTERED` response still
-returns `S1000`. We treat `subscriptionStatus: REGISTERED` as the
-only positive result; anything else is "not subscribed".
+Note: per `getStatus` contract, an `UNREGISTERED` or
+`TEMPORARY BLOCKED` response still returns `S1000`. We treat
+`subscriptionStatus: REGISTERED` as the only positive result;
+anything else falls through to the terminal-failure branch.
+See `BdAppsService::TERMINAL_FAILURE_STATUSES` for the canonical
+list (`UNREGISTERED`, `EXPIRED`, `TEMPORARY BLOCKED`).
 
 ## Implementation
 

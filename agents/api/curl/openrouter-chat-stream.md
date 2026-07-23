@@ -15,7 +15,7 @@ and iterate the SSE response.
 | Authorization | `Bearer $OPENROUTER_API_KEY` |
 | Content-Type | `application/json` |
 | Accept | `text/event-stream` |
-| X-Title | `ChatApp` (configurable via `OPENROUTER_APP_NAME`) |
+| X-Title | `Chat App` (configurable via `OPENROUTER_APP_NAME`) |
 | HTTP-Referer | `https://your-host.com` (configurable via `OPENROUTER_APP_URL`) |
 
 ## Body
@@ -41,7 +41,7 @@ curl \
   "https://openrouter.ai/api/v1/chat/completions" \
   -H "Authorization: Bearer $OPENROUTER_API_KEY" \
   -H "Content-Type: application/json" \
-  -H "X-Title: ChatApp" \
+  -H "X-Title: Chat App" \
   -H "HTTP-Referer: $APP_URL" \
   -d '{
     "model": "openai/gpt-4o-mini",

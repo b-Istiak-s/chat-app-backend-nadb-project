@@ -1,6 +1,7 @@
 # Project Plans
 
-This file tracks every implementation plan produced for ChatApp backend.
+This file tracks every implementation plan produced for the Chat
+App backend.
 
 ## 2026-07-16 — Initial chat_app backend
 
@@ -458,3 +459,170 @@ confirmed" view with auto-refresh and a manual "Refresh now"
 button. The 10-second delayed `PollSubscriptionStatusJob` and the
 cron safety net drive row reconciliation in the background — login
 no longer depends on them.
+
+## 2026-07-23 — Subscription state machine overhaul + Chat App rebrand
+
+**Feature:** Four-state subscription model
+(`unverified` → `pending` → `registered`, with terminal
+`unregistered`), server-side `/auth/me` forced-logout gate, and
+product rename from "ChatApp" to "Chat App".
+
+**Prompt:** Stop using the `cancelled` state — rename it to
+`unregistered` to align with the gateway's literal `UNREGISTERED`
+reply. Treat `TEMPORARY BLOCKED` as a non-token-bearing terminal
+status. Add a server-side `/auth/me` guard that wipes Sanctum
+tokens when the user is no longer token-bearing, so a background
+flip to `unregistered` (TEMPORARY BLOCKED, EXPIRED, user-cancel)
+is enforced within seconds. Frontend: clear token + snack bar +
+bounce to /start on a 401. Rename the product everywhere to
+"Chat App" + rename native identifier to `com.chat.app.project`.
+
+**Plan:**
+
+### State machine
+
+Four states; same set as before, canonical name aligned with
+the gateway:
+
+| State          | Token? | Notes                                    |
+|----------------|--------|------------------------------------------|
+| `unverified`   | No     | OTP not yet entered. One-shot for first |
+|                |        | registration; once `phone_verified_at`  |
+|                |        | is set, the row never returns here.     |
+| `pending`      | Yes    | OTP verified, BDApps mid-charge. UI     |
+|                |        | locked to `payment-not-confirmed`.      |
+| `registered`   | Yes    | BDApps confirmed REGISTERED. Full       |
+|                |        | feature access (chat, APK).             |
+| `unregistered` | No     | Terminal. User cancelled or gateway     |
+|                |        | replied `UNREGISTERED` / `EXPIRED` /    |
+|                |        | `TEMPORARY BLOCKED`.                    |
+
+`unverified` rules:
+- OTP issued + verified once for first registration. After
+  `phone_verified_at` is set, the user never re-enters
+  `unverified`. Subsequent sessions start at `pending` or
+  `registered`; a fresh OTP is only used to re-subscribe after
+  `unregistered`.
+
+`pending` rules:
+- Token-bearing. Feature access locked to
+  `/payment-not-confirmed`. Polls (10s per-user job + cron)
+  reconcile to `registered`.
+
+`registered` rules:
+- Token-bearing. Full access (chat, APK download, settings).
+
+`unregistered` rules:
+- No token. Next `/auth/start` issues a fresh OTP. Gateway
+  may still refuse if `TEMPORARY BLOCKED` is in effect.
+
+### Models / repository
+
+- `BdappsSubscription`: `STATUS_UNREGISTERED` constant
+  (replaces `STATUS_CANCELLED`); `isUnregistered()` predicate;
+  `scopeUnregistered()` query scope.
+- `User`: `isUnregistered()` predicate (replaces
+  `isCancelled()`). `isTokenBearing()` semantics unchanged
+  (`pending || registered`).
+- `BdappsSubscriptionRepository::unregisteredForUser(int)` —
+  used by the `/auth/me` gate.
+
+### Migration
+
+`2026_07_23_130000_rename_cancelled_to_unregistered.php`
+rewrites existing rows + `users.subscription_status` in place.
+No row destroyed; defaults unchanged. Down() restores the old
+string for reversibility.
+
+### Services
+
+- `BdAppsService::TERMINAL_FAILURE_STATUSES` adds
+  `TEMPORARY BLOCKED`. New `isTemporaryBlocked()` helper for
+  UI / logs to surface the operator-applied status distinctly
+  from a clean `UNREGISTERED`.
+- `SubscriptionService::verifyOtp()`: terminal replies
+  (`UNREGISTERED` / `EXPIRED` / `TEMPORARY BLOCKED`) now move
+  the user to `unregistered` AND the row to
+  `STATUS_UNREGISTERED` (with `cancelled_at` stamped).
+  Previously the row was unconditionally set to `pending`,
+  leaving a token-bearing user + row when the gateway had
+  refused to charge — fix that latent bug.
+
+### `/auth/me` forced-logout gate
+
+`AuthController::me()`:
+- Loads the user's latest subscription row.
+- Computes `$isTokenBearing = $user->isTokenBearing()
+  && ! ($latestSubscription && $latestSubscription->isUnregistered())`.
+- On mismatch: `$user->tokens()->delete()` + 401 with
+  `error_code: forced_logout` (or `subscription_required`
+  for the unverified-with-no-row edge case).
+
+Why the extra repo check on top of `users.isTokenBearing()`:
+the user mirror can briefly lag the row source of truth
+(webhook arrives before the user row is rewritten). Trust the
+row.
+
+### Chat App rebrand
+
+- `.env.example` / `.env.testing`: `APP_NAME`,
+  `BDAPPS_APPLICATION_HASH`, `OPENROUTER_APP_NAME` → "Chat
+  App" (quoted to survive dotenv whitespace).
+- `OpenRouterService`: X-Title default fallback "Chat App".
+- `SubscriptionService` SMS body: "Chat App: You just signed
+  in to your Chat App account on …".
+- Web views: `landing.blade.php`, `web/auth/login.blade.php`,
+  `web/layouts/app.blade.php`, `web/dashboard.blade.php` —
+  title, H1/H2, button labels, navbar brand, meta description
+  all use "Chat App".
+
+### Modular commit history
+
+Backend:
+
+1. `refactor(bdapps): rename cancelled → unregistered` —
+   migration + model + repository + service + view flash
+   messages + docblock updates. Pure rename; no behaviour
+   change.
+2. `fix(bdapps): treat TEMPORARY BLOCKED as a terminal status` —
+   `TERMINAL_FAILURE_STATUSES` adds `TEMPORARY BLOCKED`,
+   `isTemporaryBlocked()` helper, `verifyOtp()` row/user
+   terminal handling. Fixes latent verifyOtp bug.
+3. `feat(api): /auth/me forced-logout gate for non-token-bearing users` —
+   AuthController::me() + repository helper + scope. Token
+   wipe + 401 with `error_code`.
+4. `chore(brand): rename app to Chat App across backend surfaces` —
+   `.env.example` / `.env.testing` + service fallback + SMS
+   body + blade views.
+
+Flutter app:
+
+5. `feat(app): frontend 401 forced-logout flow + state rename to unregistered` —
+   `error_interceptor.dart` (forced-logout handler +
+   `scaffoldMessengerKeyProvider`); `main.dart`
+   `scaffoldMessengerKey` wiring; `user.dart` /
+   `client.dart` state rename + label changes in
+   `settings_page.dart`.
+6. `chore(brand): rename app to Chat App across all native surfaces` —
+   pubspec.yaml + `main.dart` `ChatApp` class →
+   `ChatAppRoot` + MaterialApp title; Android
+   `namespace`/`applicationId`/`AndroidManifest.xml`
+   `android:label`; iOS bundle id + Info.plist; macOS bundle
+   id + xcconfig; package import paths.
+
+### Docs
+
+- `agents/Context.md`: subscription state table,
+  forced-logout gate note, endpoint docs refreshed; product
+  name + env example values updated.
+- `agents/plans.md`: this entry.
+- `agents/api/auth.md` / `agents/api/curl/*.md` references to
+  `subscribed`/`unsubscribed` flow updated where it affects
+  client semantics; `CHANGELOG.md` documents the v2 endpoint
+  behaviour.
+
+**Outcome:** Subscription state machine has one canonical name
+(unregistered). TEMPORARY BLOCKED is a first-class terminal.
+A background flip to unregistered forces a token wipe within
+seconds (the next /auth/me call). The whole stack speaks the
+new product name. Commits are scoped and reversible.
