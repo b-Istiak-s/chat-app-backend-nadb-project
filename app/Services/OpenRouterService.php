@@ -30,7 +30,7 @@ class OpenRouterService
         $this->client = OpenAI::factory()
             ->withApiKey($apiKey)
             ->withBaseUri($baseUrl)
-            ->withHttpHeader('X-Title', (string) config('openrouter.app_name', 'ChatApp'))
+            ->withHttpHeader('X-Title', (string) config('openrouter.app_name', 'Chat App'))
             ->withHttpHeader('HTTP-Referer', (string) config('openrouter.app_url', 'http://localhost'))
             ->make();
     }

@@ -455,7 +455,7 @@ class SubscriptionService
         }
 
         $message = sprintf(
-            'ChatApp: You just signed in to your ChatApp account on %s. '
+            'Chat App: You just signed in to your Chat App account on %s. '
             .'If this was not you, please contact support.',
             now()->format('Y-m-d H:i'),
         );

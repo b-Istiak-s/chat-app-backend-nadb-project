@@ -1,4 +1,4 @@
-@extends('web.layouts.app', ['title' => 'Sign in — ChatApp'])
+@extends('web.layouts.app', ['title' => 'Sign in — Chat App'])
 
 @section('content')
     <div class="card">
@@ -40,7 +40,7 @@
                 </div>
             </form>
         @else
-            <h1>Sign in to ChatApp</h1>
+            <h1>Sign in to Chat App</h1>
             <p class="muted">
                 Enter your Bangladeshi phone number. We'll send a one-time password to verify and
                 activate your subscription.

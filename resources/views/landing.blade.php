@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Subscribe to ChatApp and download the Android app.">
+    <meta name="description" content="Subscribe to Chat App and download the Android app.">
     <title>Chat App — Connect Simply</title>
     <style>
         :root {

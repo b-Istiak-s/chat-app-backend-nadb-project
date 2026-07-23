@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="ChatApp — subscribe, manage your subscription, and download the Android app.">
-    <title>{{ $title ?? 'ChatApp Dashboard' }}</title>
+    <meta name="description" content="Chat App — subscribe, manage your subscription, and download the Android app.">
+    <title>{{ $title ?? 'Chat App Dashboard' }}</title>
     <style>
         :root {
             color-scheme: light dark;
@@ -303,7 +303,7 @@
     <header class="topbar">
         <a class="brand" href="{{ route('landing') }}">
             <span class="brand-mark">C</span>
-            <span>ChatApp</span>
+            <span>Chat App</span>
         </a>
         <nav>
             @auth('web')

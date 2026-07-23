@@ -1,4 +1,4 @@
-@extends('web.layouts.app', ['title' => 'Dashboard — ChatApp'])
+@extends('web.layouts.app', ['title' => 'Dashboard — Chat App'])
 
 @section('content')
     <div class="card status-card">
@@ -23,7 +23,7 @@
     {{-- ──────────────────────────── Active (registered) ──────────────────────────── --}}
     @if ($user->isRegistered())
         <div class="card">
-            <h2>Download the ChatApp</h2>
+            <h2>Download the Chat App</h2>
             <p class="muted">
                 Your subscription is active. You can download the Android app below.
             </p>
@@ -48,7 +48,7 @@
             <div class="actions">
                 <a href="{{ route('downloads.apk') }}" class="btn btn-primary" download="chat-app.apk">
                     <span aria-hidden="true">↓</span>
-                    Download ChatApp APK
+                    Download Chat App APK
                 </a>
 
                 <form action="{{ route('dashboard.unsubscribe') }}" method="POST"
@@ -187,7 +187,7 @@
             @else
                 <h2>Subscribe</h2>
                 <p class="muted">
-                    Subscribe to ChatApp to unlock the Android app and AI chat. We'll send a one-time
+                    Subscribe to Chat App to unlock the Android app and AI chat. We'll send a one-time
                     password to your phone to confirm.
                 </p>
             @endif
