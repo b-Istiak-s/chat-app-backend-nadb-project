@@ -124,6 +124,17 @@ class BdappsSubscription extends Model
         return $query->where('user_id', $userId);
     }
 
+    /**
+     * Terminal rows (user cancelled, or gateway replied
+     * `UNREGISTERED` / `EXPIRED` / `TEMPORARY BLOCKED`). Use this
+     * when checking "should this user have their tokens
+     * cleared?" or "should we issue a token at all?".
+     */
+    public function scopeUnregistered(Builder $query): Builder
+    {
+        return $query->where('status', self::STATUS_UNREGISTERED);
+    }
+
     public function isLive(): bool
     {
         return in_array($this->status, [

@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Api\Auth\StartRequest;
 use App\Http\Requests\Api\Auth\VerifyOtpRequest;
 use App\Models\User;
+use App\Repositories\BdappsSubscriptionRepository;
 use App\Services\BdApps\SubscriptionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -27,7 +28,13 @@ use Symfony\Component\HttpFoundation\Response;
  *     reads the resulting `subscription_status` via `/auth/me`
  *     to switch between chat and the "Payment pending" page.
  *   - me(): return phone, `subscription_status`, and
- *     `is_verified` (first-OTP event).
+ *     `is_verified` (first-OTP event). Also the **forced
+ *     logout gate**: any user whose subscription has flipped
+ *     out of a token-bearing state in the background (e.g.
+ *     `applyNotifyStatus()` saw `UNREGISTERED`/`EXPIRED`/
+ *     `TEMPORARY BLOCKED`) has all Sanctum tokens revoked
+ *     and gets a 401 with `error_code=forced_logout` so the
+ *     client can clear its token and bounce to /start.
  *   - logout(): revoke current Sanctum token.
  *   - unsubscribe(): cancel BDApps subscription; user + row
  *     move to `unregistered`.
@@ -36,6 +43,7 @@ class AuthController extends Controller
 {
     public function __construct(
         private SubscriptionService $subscriptionService,
+        private BdappsSubscriptionRepository $subscriptions,
     ) {}
 
     public function start(StartRequest $request): JsonResponse
@@ -121,6 +129,42 @@ class AuthController extends Controller
     {
         try {
             $user = $request->user();
+
+            // Forced logout gate: the user must be token-bearing
+            // (`pending` or `registered`) to hold a Sanctum token.
+            // If a background reconciliation (webhook, per-user
+            // poll, or cron) flipped them to `unregistered`, we
+            // wipe every token and return 401 — the client
+            // matches `error_code=forced_logout` and clears its
+            // own stored token + bounces to /start.
+            //
+            // Why the extra repo check on top of the user flag?
+            // The `users.subscription_status` mirror can briefly
+            // lag the `bdapps_subscriptions.status` source of
+            // truth (a webhook arrives before the user row is
+            // rewritten). The user row says "still pending" while
+            // the latest subscription row is `unregistered`. We
+            // trust the row — that's the actual reconciliation
+            // verdict.
+            $latestSubscription = $this->subscriptions->latestForUser($user->id);
+            $isTokenBearing = $user->isTokenBearing()
+                && ! ($latestSubscription && $latestSubscription->isUnregistered());
+
+            if (! $isTokenBearing) {
+                $user->tokens()->delete();
+
+                $reason = $user->isUnregistered() || ($latestSubscription && $latestSubscription->isUnregistered())
+                    ? 'forced_logout'
+                    : 'subscription_required';
+
+                return $this->sendErrorResponse(
+                    $reason === 'forced_logout'
+                        ? 'Your subscription is no longer active. Please sign in again.'
+                        : 'An active subscription is required to use the app.',
+                    Response::HTTP_UNAUTHORIZED,
+                    ['error_code' => $reason],
+                );
+            }
 
             return $this->sendSuccessResponse([
                 'id' => $user->id,

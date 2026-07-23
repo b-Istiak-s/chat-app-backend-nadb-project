@@ -108,4 +108,19 @@ class BdappsSubscriptionRepository
             ->orderBy('id')
             ->get();
     }
+
+    /**
+     * The user's most recent terminal row — covers `unregistered`
+     * (cancelled, EXPIRED, TEMPORARY BLOCKED, or UNREGISTERED
+     * reply from the gateway). Used by `AuthController::me()` to
+     * detect the "token-bearing user has flipped to unregistered
+     * in the background" case and force-log them out.
+     */
+    public function unregisteredForUser(int $userId): ?BdappsSubscription
+    {
+        return BdappsSubscription::where('user_id', $userId)
+            ->unregistered()
+            ->orderByDesc('id')
+            ->first();
+    }
 }
