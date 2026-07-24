@@ -197,7 +197,7 @@ class DashboardController extends Controller
             abort(Response::HTTP_FORBIDDEN, 'Active subscription required to download the app.');
         }
 
-        $path = storage_path('app/public/downloads/app-debug.apk');
+        $path = storage_path('app/public/downloads/chat-app.apk');
 
         if (! is_file($path)) {
             abort(Response::HTTP_NOT_FOUND, 'APK is not currently available.');
